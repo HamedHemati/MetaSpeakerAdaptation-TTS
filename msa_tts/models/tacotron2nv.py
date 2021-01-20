@@ -76,7 +76,7 @@ class Tacotron2NV(nn.Module):
                 input_lengths, 
                 melspecs, 
                 melspec_lengths,
-                speaker_ids):
+                speaker_vecs):
         # Char embeddings        
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         
@@ -89,9 +89,9 @@ class Tacotron2NV(nn.Module):
 
         # Speaker embedding
         if self.params["speaker_emb_type"] == "learnable_lookup":
-            spk_emb_vec = self.speaker_embedder(speaker_ids).unsqueeze(1)
+            spk_emb_vec = self.speaker_embedder(speaker_vecs).unsqueeze(1)
         elif self.params["speaker_emb_type"] == "static":
-            spk_emb_vec = spk_embs.unsqueeze(1)
+            spk_emb_vec = speaker_vecs.unsqueeze(1)
         spk_emb_vec = spk_emb_vec.expand(encoder_outputs.size(0), encoder_outputs.size(1), -1)
         encoder_outputs = torch.cat([encoder_outputs, spk_emb_vec], dim=-1)
         
@@ -109,7 +109,7 @@ class Tacotron2NV(nn.Module):
     def infer(self, 
               inputs, 
               input_lengths,
-              speaker_ids):
+              speaker_vecs):
         # Char embeddings
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
 
@@ -122,9 +122,9 @@ class Tacotron2NV(nn.Module):
 
         # Speaker embedding
         if self.params["speaker_emb_type"] == "learnable_lookup":
-            spk_emb_vec = self.speaker_embedder(speaker_ids).unsqueeze(1)
+            spk_emb_vec = self.speaker_embedder(speaker_vecs).unsqueeze(1)
         elif self.params["speaker_emb_type"] == "static":
-            spk_emb_vec = spk_embs.unsqueeze(1)
+            spk_emb_vec = speaker_vecs.unsqueeze(1)
         spk_emb_vec = spk_emb_vec.expand(encoder_outputs.size(0), encoder_outputs.size(1), -1)
         encoder_outputs = torch.cat([encoder_outputs, spk_emb_vec], dim=-1)
 
