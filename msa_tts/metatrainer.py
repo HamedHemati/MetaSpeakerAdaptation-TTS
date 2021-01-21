@@ -4,7 +4,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 from .utils.path_manager import PathManager
-from .dataloaders.dataloader_meta import get_dataloaders
+from .dataloaders.dataloader_meta import get_dataloader
 from .models.tacotron2nv import Tacotron2NV
 from .models.modules_tacotron2nv.tacotron2nv_loss import Tacotron2Loss
 from .utils.helpers import get_optimizer
@@ -38,10 +38,13 @@ class MetaTrainer():
         self._init_dataloaders()
 
         # Set model
-        self.params["model"]["num_speakers"] = len(self.metatrain_trainloader.dataset.speaker_to_id.keys())
+        self.params["model"]["num_speakers"] = len(self.dataloader_metatrain.dataset.speaker_to_id.keys())
         self.params["model"]["n_symbols"] = len(char_list)
         self.params["model"]["n_mel_channels"] = params["audio_params"]["n_mels"]
-        if self.params["model_name"] == "Tacotron2NV":
+
+        self.model_name = self.params["model_name"]
+        self.speaker_emb_type = self.params["model"]["speaker_emb_type"]
+        if self.model_name  == "Tacotron2NV":
             self.model = Tacotron2NV(self.params["model"])
         else:
             raise NotImplementedError
@@ -50,16 +53,17 @@ class MetaTrainer():
         # Optimizer and criterion
         self._init_criterion_optimizer()
 
+        # Finetuning
+        self._load_checkpoint()
+
     def _init_dataloaders(self):
         # Load meta-train loaders
         print("\nInitializing meta-train loaders")
-        self.metatrain_trainloader, self.metatrain_testloader, logs_mtr = get_dataloaders("metatrain", **self.params)
-        self.metatrain_testloader.dataset.speaker_to_id = self.metatrain_trainloader.dataset.speaker_to_id
-        self.metatrain_testloader.dataset.id_to_speaker = self.metatrain_trainloader.dataset.id_to_speaker
+        self.dataloader_metatrain, logs_mtr = get_dataloader("metatrain", **self.params)
 
         # Load meta-test loaders
         print("\nInitializing meta-test loaders")
-        self.metatest_trainloader, self.metatest_testloader, logs_mts= get_dataloaders("metatest", **self.params)
+        self.dataloader_metatest, logs_mts= get_dataloader("metatest", **self.params)
         print("\n")
 
         # Write DS details to a text file
@@ -83,20 +87,48 @@ class MetaTrainer():
         self.outer_optimizer = get_optimizer(self.model, **self.params["optim_outer"])
 
     def _unpack_batch(self, batch_items):
+        r"""Un-packs batch items and sends them to compute device"""
         item_ids, inp_chars, inp_lens, mels, mel_lens, speakers_ids, spk_embs, stop_labels = batch_items
-        # Transfer batch items to compute_device
-        inp_chars, inp_lens  = inp_chars.to(self.device), inp_lens.to(self.device)
-        mels, mel_lens =  mels.to(self.device), mel_lens.to(self.device)
-        speakers_ids = speakers_ids.to(self.device)
-        spk_embs = spk_embs.to(self.device)
-        stop_labels = stop_labels.to(self.device)
+        if self.model_name == "Tacotron2NV":
+            # Transfer batch items to compute_device
+            inp_chars, inp_lens  = inp_chars.to(self.device), inp_lens.to(self.device)
+            mels, mel_lens =  mels.to(self.device), mel_lens.to(self.device)
+            
+            if self.speaker_emb_type  == "learnable_lookup":
+                speaker_vecs = speakers_ids.to(self.device)
+            elif self.speaker_emb_type  == "static":
+                speaker_vecs = spk_embs.to(self.device)
 
-        return item_ids, inp_chars, inp_lens, mels, mel_lens, speakers_ids, spk_embs, stop_labels 
-    
+            stop_labels = stop_labels.to(self.device)
+            d = {"inputs": inp_chars,
+                 "input_lengths": inp_lens,
+                 "melspecs": mels,
+                 "melspec_lengths": mel_lens,
+                 "speaker_vecs":speaker_vecs}
+            return d, stop_labels
+            # return [inp_chars, inp_lens, mels, mel_lens, speaker_vecs], stop_labels
+        else:
+            raise NotImplementedError
+
     def _save_checkpoint(self):
         k = self.step_global // 100
         checkpoint_path = os.path.join(self.path_manager.checkpoints_path, f"checkpoint_{k}.pt")
         torch.save(self.model.state_dict(), checkpoint_path)
 
-    def log_writer(self, d):
-        self.writer.add_scalar(f"test/{ds_name}", outer_loss_test_ds, self.step_global)
+    def log_writer(self, logs):
+        r"""Writes a dictionary of logs to the tensorboard.log
+            Inputs:
+                   logs: dictionary of the form {k: (a, b)}
+        """
+        for k, v in logs.items():
+            self.writer.add_scalar(k, v[0], v[1])
+
+    def _load_checkpoint(self):
+         # Load checkpoint
+        print(f"Loading checkpoint from  {self.params['finetune_checkpoint_path']}")  
+        ckpt = torch.load(self.params["finetune_checkpoint_path"], map_location=self.device)
+        for name, param in self.model.named_parameters():
+            try:
+                self.model.state_dict()[name].copy_(ckpt[name])
+            except:
+                print(f"Could not load weights for {name}")
