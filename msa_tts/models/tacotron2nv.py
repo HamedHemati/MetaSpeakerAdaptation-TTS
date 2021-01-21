@@ -9,7 +9,7 @@ from .modules_tacotron2nv.modules import get_mask_from_lengths
 
 class Tacotron2NV(nn.Module):
     def __init__(self, params):
-        super(Tacotron2NVModular, self).__init__()
+        super(Tacotron2NV, self).__init__()
         self.params = params
         self.mask_padding = params["mask_padding"]
         self.n_mel_channels = params["n_mel_channels"]
