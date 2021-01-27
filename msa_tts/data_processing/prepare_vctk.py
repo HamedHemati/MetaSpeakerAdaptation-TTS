@@ -3,6 +3,8 @@ import torch
 import argparse
 import os
 import soundfile as sf
+import librosa
+import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from ..utils.g2p.grapheme2phoneme import Grapheme2Phoneme
@@ -19,8 +21,18 @@ class ComVoiceProcessor():
     def get_line_meta(self, spk_id, wav_file, transcript, itr, total_count):
         try:
             print(f"Processing {itr}/{total_count}")
-            wav_path = os.path.join(self.ds_path, "wavs", spk_id, wav_file)
+            wav_path = os.path.join(self.ds_path, "wav48", spk_id, wav_file)
             wav, sr = sf.read(wav_path)     
+            
+            # Resample
+            wav = librosa.resample(wav, sr, 22050)
+            sr = 22050
+
+            # Save resampled wav file
+            target_wav_path = wav_path.replace("/wav48/", "/wavs/")
+            os.makedirs("/".join(target_wav_path.split("/")[:-1]), exist_ok=True)
+            sf.write(target_wav_path, wav, sr)
+            
             dur = len(wav) / float(sr)
             
             if transcript[-1] not in ["!", ".", "?"]:
@@ -33,15 +45,23 @@ class ComVoiceProcessor():
         except:
             return None
             
-    def create_metadata(self):
-        with open(os.path.join(self.ds_path, "meta.csv"), "r") as metafile:
-            all_lines = metafile.readlines()
-        
-        all_lines = [l.strip() for l in all_lines]
-        all_lines = [l.split("|") for l in all_lines]
-        all_lines = [(l[0], l[1], l[2]) for l in all_lines]
+    def read_ds_files(self):
+        all_txt_files = glob.glob(os.path.join(self.ds_path, "txt/*/*.txt"))
+        all_lines = []
+        for txt_file in all_txt_files:
+            with open(txt_file, "r") as tfile:
+                transcript = tfile.readline().strip()
+            spk = txt_file.split("/")[-2]
+            wav_file = txt_file.split("/")[-1].replace(".txt", ".wav")
+            all_lines.append((spk, wav_file, transcript))
+        return all_lines
 
-        executor = ProcessPoolExecutor(max_workers=10)
+    def create_metadata(self):
+        all_lines = self.read_ds_files()
+        # Create ./wavs dir for saving wav files with sr=22K
+        os.makedirs(os.path.join(self.ds_path, "wavs"), exist_ok=True)
+        
+        executor = ProcessPoolExecutor(max_workers=20)
         meta_lines = []
         for itr, line in enumerate(all_lines):
             spk_id, wav_file, transcript = line
