@@ -115,13 +115,19 @@ class MetaTrainer():
         checkpoint_path = os.path.join(self.path_manager.checkpoints_path, f"checkpoint_{k}.pt")
         torch.save(self.model.state_dict(), checkpoint_path)
 
-    def log_writer(self, logs):
+    def log_writer(self, logs, type="scalar"):
         r"""Writes a dictionary of logs to the tensorboard.log
             Inputs:
                    logs: dictionary of the form {k: (a, b)}
         """
-        for k, v in logs.items():
-            self.writer.add_scalar(k, v[0], v[1])
+        if type == "scalar":
+            for k, v in logs.items():
+                self.writer.add_scalar(k, v[0], v[1])
+        elif type == "hist":
+            for k, v in logs.items():
+                self.writer.add_histogram(k, v[0], v[1])
+        else:
+            raise NotImplementedError
 
     def _load_checkpoint(self):
          # Load checkpoint
@@ -132,3 +138,19 @@ class MetaTrainer():
                 self.model.state_dict()[name].copy_(ckpt[name])
             except:
                 print(f"Could not load weights for {name}")
+
+    def get_module_grads_flattened(self, step):
+        r"""Retrieves gradients of each module and falttens them.
+            Returns: dictionary of module grads {mod: ([grad_list], step)}
+        """
+        named_params = list(self.model.named_parameters())
+        param_names = [n for (n, p) in named_params]
+        model_parts = list(set([name.split(".")[0] for name in param_names]))
+
+        module_grads ={}
+        for model_part in model_parts:
+            module_grad = [p.grad.flatten() for (n, p) in named_params if n.startswith(model_part) if p.grad != None]
+            if len(module_grad) > 0:
+                module_grad = torch.cat(module_grad, dim=0)
+                module_grads["grad_" + model_part] = (module_grad, step)
+        return module_grads

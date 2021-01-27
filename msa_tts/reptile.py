@@ -3,6 +3,7 @@ import argparse
 import os
 import higher
 import torch
+from torch.nn.utils import clip_grad_norm_
 from copy import deepcopy
 from .metatrainer import MetaTrainer
 from .utils.generic import load_params
@@ -80,12 +81,21 @@ class Reptile(MetaTrainer):
                 # ===== Outer loop
                 self.model.zero_grad()
                 grad_log = apply_grad(self.model, grad_list[0])
-                # grad_norm = clip_grad_norm_(self.model.parameters(), 
-                #                             self.params["grad_clip_thresh"])
+
+                if self.params["clip_grad_norm"]:
+                    grad_norm = clip_grad_norm_(self.model.parameters(), 
+                                                self.params["grad_clip_thresh"])
+
                 self.outer_optimizer.step()
 
                 # ===== Logs
                 self.step_global += 1
+                
+                # Gardient histograms
+                module_grads = self.get_module_grads_flattened(self.step_global)
+                self.log_writer(module_grads, type="hist")
+                
+                # MCD and loss
                 mcd_batch_value = mcd_batch(out_post.cpu().transpose(1, 2).numpy(),
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
