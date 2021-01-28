@@ -102,7 +102,7 @@ class Reptile(MetaTrainer):
 
                 log_dict = {"train/mcd": (mcd_batch_value, self.step_global),
                             "train/loss": (loss_test, self.step_global),
-                            f"train/loss_{spk}": (loss_test, epoch)
+                            f"train/loss_{spk}": (loss_test, self.step_global)
                             }
                 self.log_writer(log_dict)
                 msg = f'| Epoch: {epoch}, itr: {self.step_global}, spk:{spk} ::  step loss:' +\
@@ -167,8 +167,8 @@ class Reptile(MetaTrainer):
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
 
-                log_dict = {f"test/loss_{spk}": (loss_test, epoch),
-                            f"test/mcd_{spk}": (mcd_batch_value, epoch)
+                log_dict = {f"test/loss_{spk}": (loss_test, self.step_global),
+                            f"test/mcd_{spk}": (mcd_batch_value, self.step_global)
                             }
                 self.log_writer(log_dict)
                 msg = f'| Epoch: {epoch}, itr: {self.step_global}, spk:{spk} ::  step loss:' +\

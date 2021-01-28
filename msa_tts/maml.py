@@ -65,9 +65,14 @@ class MAML(MetaTrainer):
                     y_pred = (out_post, out_inner, out_stop, out_attn)
                     y_gt = (mels_gt, stop_labels_gt)
                     loss_test = self.criterion(y_pred, y_gt, mel_lens_gt)
-
+                    
                     # Compute gradients for outer update
-                    task_grads = torch.autograd.grad(loss_test, fmodel.parameters(time=0))
+                    # If FOMAML compute grad w.r.t. param_t-1 otherwise w.r.t. param_t0
+                    if self.params["track_higher_grads"]:
+                        task_grads = torch.autograd.grad(loss_test, fmodel.parameters(time=0))
+                    else:
+                        task_grads = torch.autograd.grad(loss_test, fmodel.parameters(time=-1))
+                        
                     grad_list.append(task_grads)
 
                     # ===== Logs
@@ -78,7 +83,7 @@ class MAML(MetaTrainer):
 
                     log_dict = {"train/mcd": (mcd_batch_value, self.step_global),
                                 "train/loss": (loss_test, self.step_global),
-                                f"train/loss_{spk}": (loss_test, epoch)
+                                f"train/loss_{spk}": (loss_test, self.step_global)
                                 }
                     self.log_writer(log_dict)
                     msg = f'| Epoch: {epoch}, itr: {self.step_global}, spk:{spk} ::  step loss:' +\
@@ -165,8 +170,8 @@ class MAML(MetaTrainer):
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
 
-                log_dict = {f"test/loss_{spk}": (loss_test, epoch),
-                            f"test/mcd_{spk}": (mcd_batch_value, epoch)
+                log_dict = {f"test/loss_{spk}": (loss_test, self.step_global),
+                            f"test/mcd_{spk}": (mcd_batch_value, self.step_global)
                             }
                 self.log_writer(log_dict)
                 msg = f'| Epoch: {epoch}, itr: {self.step_global}, spk:{spk} ::  step loss:' +\
