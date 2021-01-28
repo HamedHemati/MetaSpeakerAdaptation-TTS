@@ -5,72 +5,86 @@ from torch.utils.data.sampler import Sampler
 import random
 import os
 import numpy as np
+import pickle
+from msa_tts.utils.g2p.grapheme2phoneme import Grapheme2Phoneme
 from msa_tts.utils.ap import AudioProcessor
-
 
 # ====================
 # ==================== TTS Dataset
 # ====================
 
 class TTSDataset(Dataset):
-    def __init__(self, g2p, ds_data, **params):
-        self.params = params
-        self.text_processor = text_processor 
+    def __init__(self, ds_data, mode, **params):
         self.ds_data = ds_data
+        self.mode = mode
+        self.params = params
+        self.g2p = Grapheme2Phoneme()
         self.audio_processor = AudioProcessor(params["audio_params"])
         self._load_metadata()
         
     def _load_metadata(self):
-        all_lines = self.ds_data["item_list"]
-        
-        # Create metadata dict
-        self.metadata = {l[0]:{"ds_root": self.ds_data["dataset_path"],
-                         "transcript": l[2], "duration": float(l[3]),
-                         "trim_margin_silence": self.ds_data["trim_margin_silence"]} for l in all_lines}
-        
-        # Extend global list of speakers
-        self.speakers_list =self.ds_data["speakers_list"]
+        self.metadata = {}
+        speakers_list = []
+        for speaker in self.ds_data["item_list"].keys():
+            # ===== All items
+            all_lines = self.ds_data["item_list"][speaker][self.mode]
+            metadata_spk = {f"speaker_{itr}":{"filename": l[1],
+                                              "ds_root": self.ds_data["dataset_path"], 
+                                              "speaker": l[0], 
+                                              "transcript_phonemized":l[3], 
+                                              "duration": float(l[4]),
+                                              "audio_folder": self.ds_data["audio_folder"],
+                                              "trim_margin_silence": self.ds_data["trim_margin_silence"]} 
+                                              for (itr, l) in enumerate(all_lines)}
+            
+            self.metadata.update(metadata_spk)
+            speakers_list.append(speaker)
 
         # Speaker ID
-        self.speaker_to_id = {s:i for (i,s) in enumerate(self.speakers_list)}
+        self.speaker_to_id = {s:i for (i,s) in enumerate(speakers_list)}
         self.id_to_speaker = {b:a for (a,b) in self.speaker_to_id.items()}
-        
+
         # Items' list
         self.items = list(self.metadata.keys())
-
+        
+        # Load speaker emebddings
+        with open(os.path.join(self.ds_data["dataset_path"], "spk_emb.pkl"), "rb") as pkl_file:
+            self.spk_emb_dict = pickle.load(pkl_file)
+        
     def __getitem__(self, index):
         item_id = self.items[index]
-        
-        # Get input chars (sequence of indices)
-        transcript =  self.metadata[item_id]["transcript"]
+        item = self.metadata[item_id]
+        filename = item["filename"]
+        speaker = item["speaker"]
 
-        # ================ NEWLY ADDED
-        # TODO evaluate the correctness of the pre-processing
-        # Convert middle dots to commas
-        transcript = transcript.replace(".", ",")
-        # Replace last char with .
-        if transcript[-1] != ",":
-            transcript = transcript + "."
-        else:
-            transcript = transcript[:-1] + "."
-        
-        # Convert transcript with the text processor
-        transcript, _ = self.text_processor.convert(transcript)
+        # Get input chars (sequence of indices)
+        transcript_phonemized = item["transcript_phonemized"]
+        transcript, _ = self.g2p.convert(transcript_phonemized, 
+                                        convert_mode="phone_to_idx")
+        transcript = torch.LongTensor(transcript)
                             
         # Get speaker ID
-        speaker_id = 0 # Always 0!
+        speaker_name = item["speaker"]
+        speaker_id = self.speaker_to_id[speaker_name]
             
         # Load waveform
-        waveform_path = os.path.join(self.metadata[item_id]["ds_root"],
-                                     f'{item_id}')
-
+        if item["audio_folder"] == "" and len(self.speaker_to_id.keys()) == 1:
+            waveform_path = os.path.join(item["ds_root"], 
+                                        filename)
+        else:
+            waveform_path = os.path.join(item["ds_root"], 
+                                        item["audio_folder"],
+                                        item["speaker"],
+                                        filename)
+        
         waveform = self.audio_processor.load_audio(waveform_path)[0].unsqueeze(0)       
-        if self.metadata[item_id]["trim_margin_silence"] == True:
+        if item["trim_margin_silence"] == True:
             waveform = self.audio_processor.trim_margin_silence(waveform)       
+    
+        # Speaker embedding
+        spk_emb = torch.FloatTensor(self.spk_emb_dict[speaker])
 
-        transcript = torch.LongTensor(transcript)
-
-        return item_id, transcript, speaker_id, waveform
+        return item_id, transcript, speaker_id, waveform, spk_emb
 
     def __len__(self):
         return len(self.items)
@@ -84,8 +98,8 @@ class TTSDataset(Dataset):
 # ==================== Collator
 # ====================
 
-class TTSColator():
-    r"""TTS Collator Class.""" 
+class Collator():
+    r"""Collator Class.""" 
     def __init__(self, reduction_factor, audio_params):
         self.reduction_factor = reduction_factor
         self.audio_processor = AudioProcessor(audio_params)
@@ -98,13 +112,15 @@ class TTSColator():
         trans_lengths = np.array([len(t[1]) for t in batch])
         
         # Sort items w.r.t. the transcript length for RNN efficiency
-        trans_lengths, ids_sorted_decreasing = torch.sort(torch.LongTensor(trans_lengths), dim=0, descending=True)
+        trans_lengths, ids_sorted_decreasing = torch.sort(torch.LongTensor(trans_lengths), 
+                                                          dim=0, descending=True)
 
         # Create list of batch items sorted by text length
         item_ids = [batch[idx][0] for idx in ids_sorted_decreasing]
         transcripts = [batch[idx][1] for idx in ids_sorted_decreasing]
         speaker_ids = [batch[idx][2] for idx in ids_sorted_decreasing]
         waveforms = [batch[idx][3] for idx in ids_sorted_decreasing]
+        spk_embs = [batch[idx][4] for idx in ids_sorted_decreasing]
         
         # Compute Mel-spectrograms
         melspecs = [self.audio_processor.get_melspec(waveform)[2] for waveform in waveforms]
@@ -121,8 +137,10 @@ class TTSColator():
         # Convert numpy arrays to PyTorch tensors
         melspec_lengths = torch.LongTensor(melspec_lengths)
         speaker_ids = torch.LongTensor(speaker_ids)
+        spk_embs = torch.stack(spk_embs, dim=0)
 
-        batch = (item_ids, transcripts, trans_lengths, melspecs, melspec_lengths, speaker_ids, stop_targets)
+        batch = (item_ids, transcripts, trans_lengths, melspecs, melspec_lengths, 
+                        speaker_ids, spk_embs, stop_targets)
         
         return batch
 
@@ -234,106 +252,94 @@ class BinnedLengthSampler(Sampler):
 # ==================== TTS Dataloader
 # ====================
 
-def get_dataloader(text_processor,
-                   **params):
-    dataloaders_train = {}
-    dataloaders_test = {}
-    ds_split_key = "datasets"
+def get_dataloader(**params):
+    # Read metafile lines
+    phase_name = "train"
+    ds_data = params[f"dataset_{phase_name}"]
+    metafile_path = os.path.join(ds_data["dataset_path"], ds_data["meta_file"])
+    with open(metafile_path) as metadata:
+        all_lines_init = metadata.readlines()
+        all_lines_init = [l.strip() for l in all_lines_init]
+        all_lines_init = [l.split("|") for l in all_lines_init]
 
-    for ds in params[ds_split_key].keys():
-        print(f"Loading data for {ds}")
-        ds_data = params[ds_split_key][ds]
-        metafile_path = os.path.join(ds_data["dataset_path"], ds_data["meta_file"])
-        with open(metafile_path) as metadata:
-            all_lines = metadata.readlines()
-        # Read metafile lines
-        all_lines = [l.strip() for l in all_lines]
-        all_lines = [l.split("|") for l in all_lines]
+    ds_data["item_list"] = {s:{} for s in ds_data["speakers_list"]}
+    logs = ""
+    # Iterate over dataset speakers and set their corresponding item lists
+    for speaker in ds_data["speakers_list"]:
+        print(f"Loading data for {speaker}")
+        # Select lines with the current speaker name
+        all_lines = [l for l in all_lines_init if l[0] == speaker]
         
-        # Keep transcripts larget than 5 
-        all_lines = [l for l in all_lines if len(l[2]) > 5]
-
         # Shuffle the lines
         random.seed(params["dataset_random_seed"])
         random.shuffle(all_lines)
         
         # ====================== Train-set item list
         # Compute cumulative sum of durations
-        cum_sum_duration = list(np.cumsum([float(l[3]) for l in all_lines]))
+        cum_sum_duration = list(np.cumsum([float(l[4]) for l in all_lines]))
 
-        # Find first index where cumsum of duration is larger than total_duration_train
-        trainset_duration_sec = ds_data["total_duration_train_min"] * 60.0
+        # Find first index where cumsum of duration is larger than total_duration_per_spk
+        total_duration_sec = ds_data["total_duration_per_spk"] * 60.0
         try:
-            first_idx = list(map(lambda i: i> trainset_duration_sec, cum_sum_duration)).index(True) 
+            first_idx = list(map(lambda i: i> total_duration_sec, cum_sum_duration)).index(True) 
         except:
-            print("Less data than expected.")
             first_idx = len(cum_sum_duration)
-        trainset_item_list = all_lines[:first_idx]
         
+        # Split item list to train and test lists
+        item_list = all_lines[:first_idx]
+        train_split_idx = round(float(ds_data["perc_train"]) * len(item_list))
+        assert train_split_idx < len(item_list)
+
+        trainset_item_list = item_list[:train_split_idx]
+        ds_data["item_list"][speaker]["train"] = trainset_item_list
         
-        ds_data["item_list"] = trainset_item_list
-        dataset_train = TTSDataset(text_processor, ds_data, **params)
+        testset_item_list = item_list[train_split_idx:]
+        ds_data["item_list"][speaker]["test"] = testset_item_list
+        logs += f"Speaker {speaker}, trainset:{len(trainset_item_list)} utt,"+\
+                f"testset:{len(testset_item_list)} utt \n"
 
-        # Get transcript lengths for the sampler
-        audio_durations_train = dataset_train.get_audio_durations()
-
-        # Define sampler
-        sampler_train = BinnedLengthSampler(audio_durations_train, params["batch_size"], params["batch_size"])
-        collator = TTSColator(reduction_factor=params["model"]["n_frames_per_step"], audio_params=params["audio_params"])
-
-        # Dataloader
-        dataloader_train = DataLoader(dataset_train,
-                                      collate_fn=collator,
-                                      batch_size=params["batch_size"],
-                                      sampler=sampler_train,
-                                      num_workers=params["num_workers"],
-                                      drop_last=False,
-                                      pin_memory=True,
-                                      shuffle=False)
-        dataloaders_train[ds] = dataloader_train
-
-        # ====================== Test-set item list
-        # Update all_lines
-        all_lines = all_lines[first_idx:]
-        assert len(all_lines) != 0
-        # Compute cumulative sum of durations
-        cum_sum_duration = list(np.cumsum([float(l[3]) for l in all_lines]))
-
-        # Find first index where cumsum of duration is larger than total_duration_train
-        testset_duration_sec = ds_data["total_duration_test_min"] * 60.0
-        try:
-            first_idx = list(map(lambda i: i> testset_duration_sec, cum_sum_duration)).index(True) 
-        except:
-            print("Less data than expected.")
-            first_idx = len(cum_sum_duration)
-
-        testset_item_list = all_lines[:first_idx]
-
-        ds_data["item_list"] = testset_item_list
-        dataset_test = TTSDataset(text_processor, ds_data, **params)
-
-        # Get transcript lengths for the sampler
-        audio_durations_test = dataset_test.get_audio_durations()
-
-        # Define sampler
-        sampler_test = BinnedLengthSampler(audio_durations_test, params["batch_size"], params["batch_size"])
-        collator = TTSColator(reduction_factor=params["model"]["n_frames_per_step"], audio_params=params["audio_params"])
-
-        # Dataloader
-        dataloader_test = DataLoader(dataset_test,
-                                      collate_fn=collator,
-                                      batch_size=params["batch_size"],
-                                      sampler=sampler_test,
-                                      num_workers=params["num_workers"],
-                                      drop_last=False,
-                                      pin_memory=True,
-                                      shuffle=False)
-        dataloaders_test[ds] =  dataloader_test                         
-
-    loaded_ds = list(params[ds_split_key].keys())
-    print("Loaded datasets: ", ds)
-    assert len(dataloaders_train) == 1
+    # Collator
+    collator = Collator(reduction_factor=params["model"]["n_frames_per_step"], 
+                            audio_params=params["audio_params"])
     
-    return dataloaders_train[loaded_ds[0]], dataloaders_test[loaded_ds[0]]
+    use_binned_sampler = params["dataset_train"]["use_binned_sampler"]
+    # Dataloader - Train
+    dataset_train = TTSDataset(ds_data, "train", **params)
+    durations_train = dataset_train.get_audio_durations()
+    
+    if use_binned_sampler:
+        sampler_train = BinnedLengthSampler(durations_train, 
+                                            params["dataset_train"]["batch_size"], 
+                                            params["dataset_train"]["batch_size"])
+    else:
+        sampler_train = None
 
+    dataloader_train = DataLoader(dataset_train,
+                                  collate_fn=collator,
+                                  batch_size=params["dataset_train"]["batch_size"],
+                                  sampler=sampler_train,
+                                  num_workers=params["num_workers"],
+                                  drop_last=False,
+                                  pin_memory=True,
+                                  shuffle=not use_binned_sampler)
+    # Dataloader - Test
+    dataset_test = TTSDataset(ds_data, "test", **params)
+    durations_test = dataset_test.get_audio_durations()
+    if use_binned_sampler:
+        sampler_test = BinnedLengthSampler(durations_test, 
+                                        params["dataset_train"]["batch_size"], 
+                                        params["dataset_train"]["batch_size"])
+    else:
+        sampler_test = None
 
+    dataloader_test = DataLoader(dataset_test,
+                                 collate_fn=collator,
+                                 batch_size=params["dataset_train"]["batch_size"],
+                                 sampler=sampler_test,
+                                 num_workers=params["num_workers"],
+                                 drop_last=False,
+                                 pin_memory=True,
+                                 shuffle=not use_binned_sampler)
+    
+
+    return dataloader_train, dataloader_test, logs

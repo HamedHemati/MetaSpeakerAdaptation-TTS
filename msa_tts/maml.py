@@ -130,7 +130,7 @@ class MAML(MetaTrainer):
                     mel_lens_gt = model_inputs["melspec_lengths"]
 
                     # Iterate
-                    for inner_iter in range(self.params["n_inner_train"]):
+                    for inner_iter in range(self.params["n_inner_test"]):
                         out_post, out_inner, out_stop, out_attn = fmodel(**model_inputs)
                         y_pred = (out_post, out_inner, out_stop, out_attn)
                         y_gt = (mels_gt, stop_labels_gt)
