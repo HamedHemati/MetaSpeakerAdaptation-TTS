@@ -56,7 +56,6 @@ class Inference():
         params["model"]["num_speakers"] = 1
 
         # Replace parameters from inference shell
-        params["batch_size"] = int(params["batch_size"])
         params["n_inner_test"] = int(params["n_inner_test"])
 
         # Model
@@ -67,7 +66,11 @@ class Inference():
         self.inner_optimizer = get_optimizer(self.model, **params["optim_inner"])
         
         # Dataloader
-        self.dataloader_metatest, _ = get_dataloader("metatest", **self.params)
+        self.params["dataset_metatest"]["batch_size"] = int(params["batch_size"])
+        self.dataloader_metatest, log = get_dataloader("metatest", **self.params)
+        print(log)
+        print(len(self.dataloader_metatest))
+        # exit()
 
     def _init_model(self):
         r"""Initializes Tacotron model."""

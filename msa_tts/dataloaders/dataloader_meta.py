@@ -34,7 +34,8 @@ class TTSDataset(Dataset):
                                                      "transcript_phonemized":l[3], 
                                                      "duration": float(l[4]),
                                                      "audio_folder": self.ds_data["audio_folder"],
-                                                     "trim_margin_silence": self.ds_data["trim_margin_silence"]} 
+                                                     "trim_margin_silence": self.ds_data["trim_margin_silence"],
+                                                     "ref_level_db": self.ds_data["ref_level_db"]} 
                                                      for l in all_lines_train}
             # ===== Test items
             all_lines_test = self.ds_data["item_list"][speaker]["test"]
@@ -43,7 +44,8 @@ class TTSDataset(Dataset):
                                                     "transcript_phonemized":l[3], 
                                                     "duration": float(l[4]),
                                                     "audio_folder": self.ds_data["audio_folder"],
-                                                    "trim_margin_silence": self.ds_data["trim_margin_silence"]} 
+                                                    "trim_margin_silence": self.ds_data["trim_margin_silence"],
+                                                    "ref_level_db": self.ds_data["ref_level_db"]} 
                                                     for l in all_lines_test}
             speakers_list.append(speaker)
 
@@ -72,7 +74,7 @@ class TTSDataset(Dataset):
                 item_id = speaker_itemlist[itr]
                 item = self.metadata[speaker][mode][item_id]
                 # Get input chars (sequence of indices)
-                transcript_phonemized = item["transcript_phonemized"]
+                transcript_phonemized = item["transcript_phonemized"] 
                 transcript, _ = self.g2p.convert(transcript_phonemized, 
                                                 convert_mode="phone_to_idx")
                 transcript = torch.LongTensor(transcript)
@@ -91,12 +93,14 @@ class TTSDataset(Dataset):
                                                 item["speaker"],
                                                 item_id)
                 
-                waveform = self.audio_processor.load_audio(waveform_path)[0].unsqueeze(0)       
+                waveform = self.audio_processor.load_audio(waveform_path)[0]      
                 if item["trim_margin_silence"] == True:
-                    waveform = self.audio_processor.trim_margin_silence(waveform)       
-            
+                    waveform = self.audio_processor.trim_margin_silence(waveform, 
+                                                                        ref_level_db=item["ref_level_db"])      
+                waveform.unsqueeze_(0)
+                
                 # Speaker embedding
-                spk_emb = torch.FloatTensor(self.spk_emb_dict[speaker])
+                spk_emb = torch.FloatTensor(self.spk_emb_dict[speaker]["mean"])
 
                 batch_items[mode].append((item_id, transcript, speaker_id, waveform, spk_emb))
         return (speaker, batch_items)

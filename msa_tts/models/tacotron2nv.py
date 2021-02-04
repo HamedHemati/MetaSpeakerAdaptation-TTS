@@ -31,12 +31,19 @@ class Tacotron2NV(nn.Module):
         if params["speaker_emb_type"] == "learnable_lookup":
             self.speaker_embedder = nn.Embedding(params["num_speakers"], 
                                                  params["speaker_embedding_dim"])
+            encoder_embedding_dim += params["speaker_embedding_dim"]
+        
         elif params["speaker_emb_type"] == "static":
             print("Using static speaker embeddings.")
+            encoder_embedding_dim += params["speaker_embedding_dim"]
+        
+        elif params["speaker_emb_type"] == "static+linear":
+            self.speaker_lin = nn.Linear(params["speaker_embedding_dim"],
+                                         params["speaker_embedding_dim_lin"])
+            encoder_embedding_dim += params["speaker_embedding_dim_lin"]
+        
         else:
             raise NotImplementedError
-
-        encoder_embedding_dim += params["speaker_embedding_dim"]
 
         # ----- Decoder
         self.decoder = Decoder(params["n_mel_channels"], 
@@ -92,6 +99,8 @@ class Tacotron2NV(nn.Module):
             spk_emb_vec = self.speaker_embedder(speaker_vecs).unsqueeze(1)
         elif self.params["speaker_emb_type"] == "static":
             spk_emb_vec = speaker_vecs.unsqueeze(1)
+        elif self.params["speaker_emb_type"] == "static+linear":
+            spk_emb_vec = self.speaker_lin(speaker_vecs).unsqueeze(1)
         spk_emb_vec = spk_emb_vec.expand(encoder_outputs.size(0), encoder_outputs.size(1), -1)
         encoder_outputs = torch.cat([encoder_outputs, spk_emb_vec], dim=-1)
         
@@ -125,6 +134,8 @@ class Tacotron2NV(nn.Module):
             spk_emb_vec = self.speaker_embedder(speaker_vecs).unsqueeze(1)
         elif self.params["speaker_emb_type"] == "static":
             spk_emb_vec = speaker_vecs.unsqueeze(1)
+        elif self.params["speaker_emb_type"] == "static+linear":
+            spk_emb_vec = self.speaker_lin(speaker_vecs).unsqueeze(1)
         spk_emb_vec = spk_emb_vec.expand(encoder_outputs.size(0), encoder_outputs.size(1), -1)
         encoder_outputs = torch.cat([encoder_outputs, spk_emb_vec], dim=-1)
 

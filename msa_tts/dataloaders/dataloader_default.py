@@ -34,7 +34,8 @@ class TTSDataset(Dataset):
                                               "transcript_phonemized":l[3], 
                                               "duration": float(l[4]),
                                               "audio_folder": self.ds_data["audio_folder"],
-                                              "trim_margin_silence": self.ds_data["trim_margin_silence"]} 
+                                              "trim_margin_silence": self.ds_data["trim_margin_silence"],
+                                              "ref_level_db": self.ds_data["ref_level_db"]} 
                                               for (itr, l) in enumerate(all_lines)}
             
             self.metadata.update(metadata_spk)
@@ -77,12 +78,14 @@ class TTSDataset(Dataset):
                                         item["speaker"],
                                         filename)
         
-        waveform = self.audio_processor.load_audio(waveform_path)[0].unsqueeze(0)       
+        waveform = self.audio_processor.load_audio(waveform_path)[0]      
         if item["trim_margin_silence"] == True:
-            waveform = self.audio_processor.trim_margin_silence(waveform)       
-    
+            waveform = self.audio_processor.trim_margin_silence(waveform, 
+                                                                ref_level_db=item["ref_level_db"])       
+        waveform.unsqueeze_(0)
+
         # Speaker embedding
-        spk_emb = torch.FloatTensor(self.spk_emb_dict[speaker])
+        spk_emb = torch.FloatTensor(self.spk_emb_dict[speaker]["mean"])
 
         return item_id, transcript, speaker_id, waveform, spk_emb
 
@@ -279,12 +282,15 @@ def get_dataloader(**params):
         cum_sum_duration = list(np.cumsum([float(l[4]) for l in all_lines]))
 
         # Find first index where cumsum of duration is larger than total_duration_per_spk
-        total_duration_sec = ds_data["total_duration_per_spk"] * 60.0
-        try:
-            first_idx = list(map(lambda i: i> total_duration_sec, cum_sum_duration)).index(True) 
-        except:
+        if ds_data["total_duration_per_spk"] != -1:
+            total_duration_sec = ds_data["total_duration_per_spk"] * 60.0
+            try:
+                first_idx = list(map(lambda i: i> total_duration_sec, cum_sum_duration)).index(True) 
+            except:
+                first_idx = len(cum_sum_duration)
+        else:
             first_idx = len(cum_sum_duration)
-        
+            
         # Split item list to train and test lists
         item_list = all_lines[:first_idx]
         train_split_idx = round(float(ds_data["perc_train"]) * len(item_list))
@@ -325,21 +331,15 @@ def get_dataloader(**params):
     # Dataloader - Test
     dataset_test = TTSDataset(ds_data, "test", **params)
     durations_test = dataset_test.get_audio_durations()
-    if use_binned_sampler:
-        sampler_test = BinnedLengthSampler(durations_test, 
-                                        params["dataset_train"]["batch_size"], 
-                                        params["dataset_train"]["batch_size"])
-    else:
-        sampler_test = None
 
     dataloader_test = DataLoader(dataset_test,
                                  collate_fn=collator,
                                  batch_size=params["dataset_train"]["batch_size"],
-                                 sampler=sampler_test,
+                                 sampler=None,
                                  num_workers=params["num_workers"],
                                  drop_last=False,
                                  pin_memory=True,
-                                 shuffle=not use_binned_sampler)
+                                 shuffle=False)
     
 
     return dataloader_train, dataloader_test, logs

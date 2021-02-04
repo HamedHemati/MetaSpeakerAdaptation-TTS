@@ -62,20 +62,25 @@ class JointTrainer():
         self._init_criterion_optimizer()
 
         # Finetuning
-        self._load_checkpoint()
+        if self.params["finetune"]:
+            self._load_checkpoint()
 
     def _init_dataloaders(self):
         # Load meta-train loaders
         print("\nInitializing train/test loaders")
+        log_ds = ""
+
         self.dataloader_train, self.dataloader_test, logs_tr = get_dataloader_default(**self.params)
+        log_ds += "Train:\n\n" + logs_tr + "\n\n\n"
 
         # Load meta-test loaders
-        print("\nInitializing meta-test loaders")
-        self.dataloader_metatest, logs_mts = get_dataloader_meta("metatest", **self.params)
-        print("\n")
+        if self.params["do_metatest"]:
+            print("\nInitializing meta-test loaders")
+            self.dataloader_metatest, logs_mts = get_dataloader_meta("metatest", **self.params)
+            print("\n")
+            log_ds += "Meta-Test:\n\n" + logs_mts
 
         # Write DS details to a text file
-        log_ds = "Train:\n\n" + logs_tr + "\n\n\n" + "Meta-Test:\n\n" + logs_mts
         with open(os.path.join(self.path_manager.output_path, "dataset_details.txt"), 'w') as ds_details:
             ds_details.write(log_ds)
         
@@ -104,7 +109,7 @@ class JointTrainer():
             
             if self.speaker_emb_type  == "learnable_lookup":
                 speaker_vecs = speakers_ids.to(self.device)
-            elif self.speaker_emb_type  == "static":
+            elif self.speaker_emb_type in ["static", "static+linear"]:
                 speaker_vecs = spk_embs.to(self.device)
 
             stop_labels = stop_labels.to(self.device)
@@ -157,7 +162,8 @@ class JointTrainer():
 
         module_grads ={}
         for model_part in model_parts:
-            module_grad = [p.grad.flatten() for (n, p) in named_params if n.startswith(model_part) if p.grad != None]
+            module_grad = [p.grad.flatten() for (n, p) in named_params 
+                           if n.startswith(model_part) if p.grad != None]
             if len(module_grad) > 0:
                 module_grad = torch.cat(module_grad, dim=0)
                 module_grads["grad_" + model_part] = (module_grad, step)
@@ -174,10 +180,11 @@ class JointTrainer():
             if epoch % self.params["ckpt_save_epoch_interval"] == 0:
                 self._save_checkpoint()
             
-            if epoch % self.params["metatest_epoch_interval"] == 0:
-                print("Meta-test phase ...")
-                self._metatest(epoch)
-                print("\n")
+            if self.params["do_metatest"]:
+                if epoch % self.params["metatest_epoch_interval"] == 0:
+                    print("Meta-test phase ...")
+                    self._metatest(epoch)
+                    print("\n")
 
     def _train(self, epoch):
         print(f"===== Training epoch {epoch}")
@@ -214,8 +221,8 @@ class JointTrainer():
                             }
                 self.log_writer(log_dict)
             
-            msg = f'| Epoch: {epoch}, itr: {self.step_global} ::  step loss:' +\
-                    f' {loss.item():#.4} | mcd: {mcd_batch_value:#.4} '
+            msg = f'| Epoch: {epoch} - {self.step_global}, itr: {itr}/{len(self.dataloader_train)} ' + \
+                  f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4} '
             print(msg)
 
             self.step_global += 1
