@@ -215,7 +215,7 @@ class JointTrainer():
                 module_grads = self.get_module_grads_flattened(self.step_global)
                 self.log_writer(module_grads, type="hist")
                 
-
+                
                 log_dict = {f"train/loss": (loss, self.step_global),
                             f"train/mcd": (mcd_batch_value, self.step_global)
                             }
@@ -226,6 +226,21 @@ class JointTrainer():
             print(msg)
 
             self.step_global += 1
+        
+        # Plot example after each epoch
+        idx = -1
+        step_temp = self.step_global // 1000
+        example_attn = out_attn[idx][:, :].detach().cpu().numpy()
+        example_mel = out_post[idx].detach().cpu().numpy()
+        example_mel_gt = mels_gt[idx].detach().cpu().numpy()
+        plot_save_path = os.path.join(self.path_manager.examples_path, 
+                                        f'train-{step_temp}K')
+        plot_spec_attn_example(example_mel, 
+                               example_mel_gt,  
+                               example_attn,
+                               plot_save_path,
+                               length_mel=mel_lens_gt[idx].item(),
+                               length_attn=model_inputs["input_lengths"][idx].item())
 
     def _test(self, epoch):
         print(f"===== Testing epoch {epoch}")
