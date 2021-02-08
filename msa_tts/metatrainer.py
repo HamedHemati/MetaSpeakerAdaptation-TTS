@@ -54,7 +54,8 @@ class MetaTrainer():
         self._init_criterion_optimizer()
 
         # Finetuning
-        self._load_checkpoint()
+        if self.params["finetune"]:
+            self._load_checkpoint()
 
     def _init_dataloaders(self):
         # Load meta-train loaders
@@ -96,7 +97,7 @@ class MetaTrainer():
             
             if self.speaker_emb_type  == "learnable_lookup":
                 speaker_vecs = speakers_ids.to(self.device)
-            elif self.speaker_emb_type  == "static":
+            elif self.speaker_emb_type  in ["static", "static+linear"]:
                 speaker_vecs = spk_embs.to(self.device)
 
             stop_labels = stop_labels.to(self.device)

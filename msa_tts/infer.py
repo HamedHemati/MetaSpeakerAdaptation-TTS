@@ -136,7 +136,7 @@ class Inference():
             
             if self.speaker_emb_type  == "learnable_lookup":
                 speaker_vecs = speakers_ids.to(self.device)
-            elif self.speaker_emb_type  == "static":
+            elif self.speaker_emb_type  in ["static", "static+linear"]:
                 speaker_vecs = spk_embs.to(self.device)
 
             stop_labels = stop_labels.to(self.device)
@@ -162,8 +162,8 @@ class Inference():
         # Speaker embedding
         with open(self.params["spk_emb_path"], "rb") as pkl_file:
             tmp = pickle.load(pkl_file)
-        spk_vec = torch.tensor(tmp[self.params["speaker"]]).unsqueeze(0).to(self.device)
-
+        spk_vec = torch.tensor(tmp[self.params["speaker"]]["mean"]).unsqueeze(0).to(self.device)
+        
         # Feed inputs to the models
         postnet_outputs, mel_lengths, attn_weights = model.infer(inp_chars.unsqueeze(0), 
                                                                  inp_len, 
