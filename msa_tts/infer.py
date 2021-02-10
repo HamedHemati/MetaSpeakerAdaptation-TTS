@@ -17,14 +17,17 @@ from .models.tacotron2nv import Tacotron2NV
 from .models.modules_tacotron2nv.tacotron2nv_loss import Tacotron2Loss
 from .utils.wavernn.audio_denoiser import AudioDenoiser
 from .utils.generic import load_params
-from .utils.ap import AudioProcessor
 from .utils.path_manager import PathManager
 from .utils.plot import plot_attention, plot_spectrogram
 from .utils.g2p.grapheme2phoneme import Grapheme2Phoneme
 from .utils.g2p.char_list import char_list
 from .utils.helpers import get_wavernn
+from .utils.hifigan.hifigan import HiFiGAN
 from .utils.helpers import get_optimizer
 from .dataloaders.dataloader_meta import get_dataloader
+from .utils.ap import AudioProcessor
+from .utils.ap2 import AudioProcessor2
+
 
 
 class Inference():
@@ -37,7 +40,10 @@ class Inference():
         print(f"Device: {self.device}")
         
         # Audio processor
-        self.ap = AudioProcessor(self.params["audio_params"], device=self.device)
+        if self.params["audio_processor"] == "ap":
+            self.ap = AudioProcessor(self.params["audio_params"], device=self.device)
+        elif self.params["audio_processor"] == "ap2":
+            self.ap = AudioProcessor2(self.params["audio_params"], device=self.device)
 
         # Set path manager
         output_path = os.path.join(self.params["output_path"], 
@@ -226,7 +232,7 @@ class Inference():
             wav = self.ap.griffinlim_logmelspec(torch.tensor(melspec).unsqueeze(0))
             wav = wav.squeeze(0).cpu().numpy()
 
-        elif self.params["vocoder"].startswith("wavernn"):
+        elif self.params["vocoder"] == "wavernn":
             params_wavernn = load_params(self.params["vocoder_params_path"])
             wavernn = get_wavernn(self.device, **params_wavernn)
             wav = wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
@@ -235,7 +241,12 @@ class Inference():
             noise_profile_path="experiments/files/noise_profiles/noise_prof1.wav"
             audio_denoiser = AudioDenoiser(noise_profile_path)
             wav = audio_denoiser.denoise(wav)
-
+        elif self.params["vocoder"] == "hifigan":
+            hifigan = HiFiGAN(self.params["vocoder_params_path"], 
+                              self.params["vocoder_ckpt_path"], 
+                              self.device)
+            wav = hifigan.inference(torch.tensor(melspec).unsqueeze(0))
+        
         # Save wav
         wav_path = os.path.join(self.path_manager.inference_path, filename + ".wav")
         soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])

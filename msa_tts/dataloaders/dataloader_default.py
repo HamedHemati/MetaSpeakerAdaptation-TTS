@@ -8,6 +8,8 @@ import numpy as np
 import pickle
 from msa_tts.utils.g2p.grapheme2phoneme import Grapheme2Phoneme
 from msa_tts.utils.ap import AudioProcessor
+from msa_tts.utils.ap2 import AudioProcessor2
+
 
 # ====================
 # ==================== TTS Dataset
@@ -19,7 +21,10 @@ class TTSDataset(Dataset):
         self.mode = mode
         self.params = params
         self.g2p = Grapheme2Phoneme()
-        self.audio_processor = AudioProcessor(params["audio_params"])
+        if self.params["audio_processor"] == "ap":
+            self.audio_processor = AudioProcessor(self.params["audio_params"])
+        elif self.params["audio_processor"] == "ap2":
+            self.audio_processor = AudioProcessor2(self.params["audio_params"])
         self._load_metadata()
         
     def _load_metadata(self):
@@ -103,9 +108,12 @@ class TTSDataset(Dataset):
 
 class Collator():
     r"""Collator Class.""" 
-    def __init__(self, reduction_factor, audio_params):
+    def __init__(self, reduction_factor, audio_processor, audio_params):
         self.reduction_factor = reduction_factor
-        self.audio_processor = AudioProcessor(audio_params)
+        if audio_processor == "ap":
+            self.audio_processor = AudioProcessor(audio_params)
+        elif audio_processor == "ap2":
+            self.audio_processor = AudioProcessor2(audio_params)
 
     def __call__(self, batch):
         r"""Prepares batch.
@@ -306,7 +314,8 @@ def get_dataloader(**params):
 
     # Collator
     collator = Collator(reduction_factor=params["model"]["n_frames_per_step"], 
-                            audio_params=params["audio_params"])
+                        audio_processor=params["audio_processor"],
+                        audio_params=params["audio_params"])
     
     use_binned_sampler = params["dataset_train"]["use_binned_sampler"]
     # Dataloader - Train
