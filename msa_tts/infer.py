@@ -245,7 +245,7 @@ class Inference():
             hifigan = HiFiGAN(self.params["vocoder_params_path"], 
                               self.params["vocoder_ckpt_path"], 
                               self.device)
-            wav = hifigan.inference(torch.tensor(melspec).unsqueeze(0))
+            wav = hifigan.inference(torch.tensor(melspec).unsqueeze(0).to(self.device)).cpu().numpy()
         
         # Save wav
         wav_path = os.path.join(self.path_manager.inference_path, filename + ".wav")

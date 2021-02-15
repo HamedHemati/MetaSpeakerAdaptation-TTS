@@ -6,8 +6,7 @@ from  .utils import load_checkpoint, AttrDict
 
 class HiFiGAN():
     def __init__(self, config_path, checkpoint_path, device):
-        config_file = os.path.join(config_path)
-        with open(config_file) as f:
+        with open(config_path) as f:
             data = f.read()
         json_config = json.loads(data)
         h = AttrDict(json_config)

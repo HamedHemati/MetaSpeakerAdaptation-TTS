@@ -200,6 +200,9 @@ class JointTrainer():
             
             loss = self.criterion(y_pred, y_gt, mel_lens_gt)
             
+            if self.params["clip_grad_norm"]:
+                grad_norm = clip_grad_norm_(self.model.parameters(), 
+                                        self.params["grad_clip_thresh"])
             self.optim.zero_grad()
             loss.backward()
             self.optim.step()
