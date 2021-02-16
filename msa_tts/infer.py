@@ -1,7 +1,6 @@
 from .utils.limit_threads import *
 import torch
 import argparse
-import os
 import sys
 import importlib
 import numpy as np
@@ -13,6 +12,11 @@ import soundfile
 import yaml
 import higher
 import pickle
+import copy
+import matplotlib
+import numpy as np
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
 from .models.tacotron2nv import Tacotron2NV
 from .models.modules_tacotron2nv.tacotron2nv_loss import Tacotron2Loss
 from .utils.wavernn.audio_denoiser import AudioDenoiser
@@ -27,7 +31,8 @@ from .utils.helpers import get_optimizer
 from .dataloaders.dataloader_meta import get_dataloader
 from .utils.ap import AudioProcessor
 from .utils.ap2 import AudioProcessor2
-
+from .utils.loss_landscape_utils import Tac2NVLossWrapper, Tac2NVWrapper
+from .utils.loss_landscapes.main import random_plane, linear_interpolation
 
 
 class Inference():
@@ -37,6 +42,7 @@ class Inference():
         r"""Makes inference with the model given the parameters."""
         # Set device
         self.device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device("cpu")
         print(f"Device: {self.device}")
         
         # Audio processor
@@ -58,6 +64,12 @@ class Inference():
         params["model"]["n_mel_channels"] = params["audio_params"]["n_mels"]
         params["model"]["n_symbols"] = len(char_list)
         
+        # Set freezing options
+        params["model"]["freeze_charemb"] = params["freeze_charemb"]
+        params["model"]["freeze_encoder"] = params["freeze_encoder"]
+        params["model"]["freeze_decoder"] = params["freeze_decoder"]
+
+
         # Set num_speakers = 1
         params["model"]["num_speakers"] = 1
 
@@ -106,7 +118,7 @@ class Inference():
         # Freeze layers
         try:
             # - Freeze char embedder
-            if params["freeze_charemb"]:
+            if self.params["freeze_charemb"]:
                 print("Freezing Char Embedder:")
                 for name, param in self.model.named_parameters():
                     if name.startswith("embedding."):
@@ -114,7 +126,7 @@ class Inference():
                         param.requires_grad = False
 
             # - Freeze encoder
-            if params["freeze_encoder"]:
+            if self.params["freeze_encoder"]:
                 print("Freezing Encoder:")
                 for name, param in self.model.named_parameters():
                     if name.startswith("encoder."):
@@ -122,7 +134,7 @@ class Inference():
                         param.requires_grad = False
 
             # - Freeze decoder
-            if params["freeze_decoder"]:
+            if self.params["freeze_decoder"]:
                 print("Freezing Decoder")
                 for name, param in self.model.named_parameters():
                     if name.startswith("decoder."):
@@ -156,7 +168,7 @@ class Inference():
         else:
             raise NotImplementedError
 
-    def generate_melspec(self, model):
+    def generate_melspec(self, model, speaker):
         """Generates mel-spec."""
         # Input char list tensor
         inp_chars, _ = self.g2p.convert(inp=self.params["input_text"], 
@@ -168,7 +180,7 @@ class Inference():
         # Speaker embedding
         with open(self.params["spk_emb_path"], "rb") as pkl_file:
             tmp = pickle.load(pkl_file)
-        spk_vec = torch.tensor(tmp[self.params["speaker"]]["mean"]).unsqueeze(0).to(self.device)
+        spk_vec = torch.tensor(tmp[speaker]["mean"]).unsqueeze(0).to(self.device)
         
         # Feed inputs to the models
         postnet_outputs, mel_lengths, attn_weights = model.infer(inp_chars.unsqueeze(0), 
@@ -185,11 +197,69 @@ class Inference():
         
         return mel, attn_weights
     
+    def plot_loss_landscape(self, model, inputs, target, target_lens, speaker):
+        print(f"Plotting loss landascape for speaker {speaker}")
+        model = Tac2NVWrapper(model)
+        metric = Tac2NVLossWrapper(self.criterion , inputs, target, target_lens)
+        STEPS = 16
+        loss_data_fin = random_plane(model, metric, 10, STEPS, normalization='filter', deepcopy_model=True)
+
+        fig = plt.figure()
+        ax = plt.axes(projection='3d')
+        X = np.array([[j for j in range(STEPS)] for i in range(STEPS)])
+        Y = np.array([[i for _ in range(STEPS)] for i in range(STEPS)])
+        ax.plot_surface(X, Y, loss_data_fin, rstride=1, cstride=1, cmap='viridis', edgecolor='none')
+        ax.set_title('Surface Plot of Loss Landscape')
+        fig_path = os.path.join(self.path_manager.inference_path, speaker + "_" + "loss_surface.png")
+        fig.savefig(fig_path)
+        
+    def plot_linear_interpolation(self, plot_inputs):
+        print("Plotting linear interpolation")
+        STEPS = 32
+        speaker_1 = self.params["speaker"][0]
+        speaker_2 = self.params["speaker"][1]
+        model_initial = Tac2NVWrapper(plot_inputs[speaker_1][0])
+        model_final = Tac2NVWrapper(plot_inputs[speaker_2][0])
+
+        
+        # Loss data for speaker 1->2
+        inputs, target, target_lens = plot_inputs[speaker_1][1], plot_inputs[speaker_1][2], plot_inputs[speaker_1][3]
+        
+        metric = Tac2NVLossWrapper(self.criterion , inputs, target, target_lens)
+
+        loss_data_12 = linear_interpolation(model_initial, model_final, metric, STEPS, deepcopy_model=True)
+        
+        plt.plot([1/STEPS * i for i in range(STEPS)], loss_data_12, 'b')
+        
+        # Loss data for speaker 2->1
+        inputs, target, target_lens = plot_inputs[speaker_2][1], plot_inputs[speaker_2][2], plot_inputs[speaker_2][3]
+        
+        metric = Tac2NVLossWrapper(self.criterion , inputs, target, target_lens)
+
+        loss_data_21 = linear_interpolation(model_final, model_initial, metric, STEPS, deepcopy_model=True)
+        loss_data_21 = np.flip(loss_data_21)
+        plt.plot([1/STEPS * i for i in range(STEPS)], loss_data_21, 'r')
+
+
+        plt.title('Linear Interpolation of Loss')
+        plt.xlabel('Interpolation Coefficient')
+        plt.ylabel('Loss')
+        axes = plt.gca()
+        # axes.set_ylim([2.300,2.325])
+        fig_path = os.path.join(self.path_manager.inference_path, f"loss_linearinterp_{speaker_1}_to_{speaker_2}_ckpt{self.params['checkpoint_id']}.png")
+        plt.savefig(fig_path)
+
     def make_inference(self):
+        self.params["speaker"] = self.params["speaker"].split(",")
+
+        # Stores plot input data and model for each speaker
+        plot_inputs = {}
+
         # ============ Meta adaptation
         for itr_b, items_b in enumerate(self.dataloader_metatest):
             for spk in items_b.keys():
-                if spk == self.params["speaker"]:
+                if spk in self.params["speaker"]:
+                    print(f"Speaker: {spk}")
                     self.model.train()
                     # Run model in stateless mode
                     grad_list = []
@@ -200,7 +270,7 @@ class Inference():
                         model_inputs, stop_labels_gt = self._unpack_batch(batch)
                         mels_gt = model_inputs["melspecs"]
                         mel_lens_gt = model_inputs["melspec_lengths"]
-
+                                                
                         # Iterate
                         for inner_iter in range(self.params["n_inner_test"]):
                             out_post, out_inner, out_stop, out_attn = fmodel(**model_inputs)
@@ -210,52 +280,65 @@ class Inference():
                             diffopt.step(loss_train)
                             print(f"{inner_iter}/{self.params['n_inner_test']}, loss: {loss_train.item()}")
 
+                        # Loss landscape plot inputs
+                        print("Copying state dict to spk_model...")
+                        model_spk = copy.deepcopy(self.model)
+                        model_spk.load_state_dict(fmodel.state_dict())
+                        
+                        plot_inputs[spk] = [copy.deepcopy(model_spk), copy.deepcopy(model_inputs), 
+                                            copy.deepcopy((mels_gt, stop_labels_gt)), 
+                                            copy.deepcopy(mel_lens_gt), 
+                                            spk]
+                        
                         fmodel.eval()
                         print("Generating melspec ...")
-                        melspec, attn_weights = self.generate_melspec(fmodel)
-                        break
+                        melspec, attn_weights = self.generate_melspec(fmodel, spk)
+                        
 
-        # Set filename
-        filename = self.params["input_text"][:10].lower().replace(" ", "_")
-        
-        # Save attention
-        attn_path = os.path.join(self.path_manager.inference_path, filename + "_attn")
-        plot_attention(attn_weights, attn_path)
+                    # Set filename
+                    filename = spk + "_" + self.params["input_text"][:10].lower().replace(" ", "_") + f"_ckpt{self.params['checkpoint_id']}"
+                    
+                    # Save attention
+                    attn_path = os.path.join(self.path_manager.inference_path, filename + "_attn")
+                    plot_attention(attn_weights, attn_path)
 
-        # Save melspec
-        melspec_path = os.path.join(self.path_manager.inference_path, filename + "_mel")
-        plot_spectrogram(melspec, melspec_path)
+                    # Save melspec
+                    melspec_path = os.path.join(self.path_manager.inference_path, filename + "_mel")
+                    plot_spectrogram(melspec, melspec_path)
 
-        # Get vocoder and generate wav
-        print("Generating wav ...")
-        if self.params["vocoder"] == "griffinlim":
-            wav = self.ap.griffinlim_logmelspec(torch.tensor(melspec).unsqueeze(0))
-            wav = wav.squeeze(0).cpu().numpy()
+                    # Get vocoder and generate wav
+                    print("Generating wav ...")
+                    if self.params["vocoder"] == "griffinlim":
+                        wav = self.ap.griffinlim_logmelspec(torch.tensor(melspec).unsqueeze(0))
+                        wav = wav.squeeze(0).cpu().numpy()
 
-        elif self.params["vocoder"] == "wavernn":
-            params_wavernn = load_params(self.params["vocoder_params_path"])
-            wavernn = get_wavernn(self.device, **params_wavernn)
-            wav = wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
-                                   params_wavernn["target"], 
-                                   params_wavernn["overlap"])
-            noise_profile_path="experiments/files/noise_profiles/noise_prof1.wav"
-            audio_denoiser = AudioDenoiser(noise_profile_path)
-            wav = audio_denoiser.denoise(wav)
-        elif self.params["vocoder"] == "hifigan":
-            hifigan = HiFiGAN(self.params["vocoder_params_path"], 
-                              self.params["vocoder_ckpt_path"], 
-                              self.device)
-            wav = hifigan.inference(torch.tensor(melspec).unsqueeze(0).to(self.device)).cpu().numpy()
-        
-        # Save wav
-        wav_path = os.path.join(self.path_manager.inference_path, filename + ".wav")
-        soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])
-        
-        # Save melspec as npy file
-        mel_npy_path = os.path.join(self.path_manager.inference_path, filename + ".npy")
-        np.save(mel_npy_path, melspec)
-
-
+                    elif self.params["vocoder"] == "wavernn":
+                        params_wavernn = load_params(self.params["vocoder_params_path"])
+                        wavernn = get_wavernn(self.device, **params_wavernn)
+                        wav = wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
+                                            params_wavernn["target"], 
+                                            params_wavernn["overlap"])
+                        noise_profile_path="experiments/files/noise_profiles/noise_prof1.wav"
+                        audio_denoiser = AudioDenoiser(noise_profile_path)
+                        wav = audio_denoiser.denoise(wav)
+                    elif self.params["vocoder"] == "hifigan":
+                        hifigan = HiFiGAN(self.params["vocoder_params_path"], 
+                                        self.params["vocoder_ckpt_path"], 
+                                        self.device)
+                        wav = hifigan.inference(torch.tensor(melspec).unsqueeze(0).to(self.device)).cpu().numpy()
+                    
+                    # Save wav
+                    wav_path = os.path.join(self.path_manager.inference_path, filename + ".wav")
+                    soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])
+                    
+                    # Save melspec as npy file
+                    mel_npy_path = os.path.join(self.path_manager.inference_path, filename + ".npy")
+                    np.save(mel_npy_path, melspec)
+        self.plot_linear_interpolation(plot_inputs)
+        for spk in self.params["speaker"]:
+            model = plot_inputs[spk][0]
+            inputs, target, target_lens = plot_inputs[spk][1], plot_inputs[spk][2], plot_inputs[spk][3]
+            self.plot_loss_landscape(model, inputs, target, target_lens, spk)
 
 ##############################
 #           Main

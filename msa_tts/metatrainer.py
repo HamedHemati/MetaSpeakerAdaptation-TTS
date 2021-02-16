@@ -42,6 +42,11 @@ class MetaTrainer():
         self.params["model"]["n_symbols"] = len(char_list)
         self.params["model"]["n_mel_channels"] = params["audio_params"]["n_mels"]
 
+        # Set freezing options
+        self.params["model"]["freeze_charemb"] = params["freeze_charemb"]
+        self.params["model"]["freeze_encoder"] = params["freeze_encoder"]
+        self.params["model"]["freeze_decoder"] = params["freeze_decoder"]
+
         self.model_name = self.params["model_name"]
         self.speaker_emb_type = self.params["model"]["speaker_emb_type"]
         if self.model_name  == "Tacotron2NV":

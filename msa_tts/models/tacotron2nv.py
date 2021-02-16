@@ -84,15 +84,21 @@ class Tacotron2NV(nn.Module):
                 melspecs, 
                 melspec_lengths,
                 speaker_vecs):
-        # Char embeddings        
+        # Char embeddings       
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
-        
+        # Freeze?
+        if self.params["freeze_charemb"]:
+            embedded_inputs = embedded_inputs.detach()
+            
         # Encoder
         if self.params["use_residual_encoder"]:
             encoder_outputs = self.encoder(embedded_inputs, input_lengths) + \
                               embedded_inputs.transpose(1, 2)
         else:
             encoder_outputs = self.encoder(embedded_inputs, input_lengths)
+        # Freeze?
+        if self.params["freeze_encoder"]:
+            encoder_outputs = encoder_outputs.detach()
 
         # Speaker embedding
         if self.params["speaker_emb_type"] == "learnable_lookup":
@@ -108,6 +114,12 @@ class Tacotron2NV(nn.Module):
         mel_outputs, gate_outputs, alignments = self.decoder(encoder_outputs, 
                                                              melspecs, 
                                                              input_lengths=input_lengths)
+        # Freeze?
+        if self.params["freeze_decoder"]:
+            mel_outputs = mel_outputs.detach()
+            gate_outputs = gate_outputs.detach()
+            alignments = alignments.detach()
+
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
 
