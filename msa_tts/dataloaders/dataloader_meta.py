@@ -265,7 +265,6 @@ def get_dataloader(phase_name,
     logs = ""
     # Iterate over dataset speakers and set their corresponding item lists
     for speaker in ds_data["speakers_list"]:
-        print(f"Loading data for {speaker}")
         # Select lines with the current speaker name
         all_lines = [l for l in all_lines_init if l[0] == speaker]
         
@@ -288,6 +287,9 @@ def get_dataloader(phase_name,
         item_list = all_lines[:first_idx]
         train_split_idx = round(float(ds_data["perc_train"]) * len(item_list))
         assert train_split_idx < len(item_list)
+        
+        if train_split_idx == len(item_list)-1:
+            train_split_idx -= 1 # To have at least to samples for the test set
 
         trainset_item_list = item_list[:train_split_idx]
         ds_data["item_list"][speaker]["train"] = trainset_item_list
@@ -296,6 +298,7 @@ def get_dataloader(phase_name,
         ds_data["item_list"][speaker]["test"] = testset_item_list
         logs += f"Speaker {speaker}, trainset:{len(trainset_item_list)} utt,"+\
                 f"testset:{len(testset_item_list)} utt \n"
+        print(f"Loaded data for {speaker}, train:{len(trainset_item_list)}, test: {len(testset_item_list)}")
 
     # Collator
     collator = MetaCollator(reduction_factor=params["model"]["n_frames_per_step"],

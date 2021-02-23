@@ -107,9 +107,9 @@ class MAML(MetaTrainer):
             # ===== Logs
             self.step_global += 1
             
-            # Gardient histograms
-            module_grads = self.get_module_grads_flattened(self.step_global)
-            self.log_writer(module_grads, type="hist")
+            # # Gardient histograms
+            # module_grads = self.get_module_grads_flattened(self.step_global)
+            # self.log_writer(module_grads, type="hist")
             
 
     def _metatest(self, epoch):

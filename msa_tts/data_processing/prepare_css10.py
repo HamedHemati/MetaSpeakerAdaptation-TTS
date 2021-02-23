@@ -1,4 +1,4 @@
-from tts.utils.limit_threads import * 
+from msa_tts.utils.limit_threads import * 
 import torch
 import argparse
 import os
@@ -7,7 +7,7 @@ import soundfile as sf
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 import soundfile as sf
-from tts.utils.g2p.g2p import Grapheme2Phoneme
+from msa_tts.utils.g2p.grapheme2phoneme import Grapheme2Phoneme
 
 
 class CSS10Processor():
@@ -23,7 +23,7 @@ class CSS10Processor():
     def get_line_meta(self, wav_file, transcript, dur, itr, total_count):
         try:
             print(f"Processing {itr}/{total_count}")
-
+            wav_file = wav_file.split("/")[-1]
             
             if transcript[-1] not in ["!", ".", "?"]:
                 transcript += "."
@@ -41,7 +41,7 @@ class CSS10Processor():
         
         all_lines = [l.strip() for l in all_lines]
         all_lines = [l.split("|") for l in all_lines]
-        all_lines = [(l[0], l[2], l[3]) for l in all_lines]
+        all_lines = [(l[0], l[1], l[2]) for l in all_lines]
 
         executor = ProcessPoolExecutor(max_workers=10)
         meta_lines = []
@@ -70,5 +70,4 @@ if __name__ == "__main__":
     
     ds_processor = CSS10Processor(args.ds_path, 
                                   args.lang,
-                                  args.spk_name)
-    ds_processor.create_metadata()
+                                  arg

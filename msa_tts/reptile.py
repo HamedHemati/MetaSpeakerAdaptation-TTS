@@ -91,9 +91,9 @@ class Reptile(MetaTrainer):
                 # ===== Logs
                 self.step_global += 1
                 
-                # Gardient histograms
-                module_grads = self.get_module_grads_flattened(self.step_global)
-                self.log_writer(module_grads, type="hist")
+                # # Gardient histograms
+                # module_grads = self.get_module_grads_flattened(self.step_global)
+                # self.log_writer(module_grads, type="hist")
                 
                 # MCD and loss
                 mcd_batch_value = mcd_batch(out_post.cpu().transpose(1, 2).numpy(),

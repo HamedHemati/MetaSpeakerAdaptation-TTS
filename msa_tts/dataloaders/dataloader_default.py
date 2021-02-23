@@ -33,7 +33,7 @@ class TTSDataset(Dataset):
         for speaker in self.ds_data["item_list"].keys():
             # ===== All items
             all_lines = self.ds_data["item_list"][speaker][self.mode]
-            metadata_spk = {f"speaker_{itr}":{"filename": l[1],
+            metadata_spk = {f"{speaker}_{itr}":{"filename": l[1],
                                               "ds_root": self.ds_data["dataset_path"], 
                                               "speaker": l[0], 
                                               "transcript_phonemized":l[3], 
@@ -277,7 +277,6 @@ def get_dataloader(**params):
     logs = ""
     # Iterate over dataset speakers and set their corresponding item lists
     for speaker in ds_data["speakers_list"]:
-        print(f"Loading data for {speaker}")
         # Select lines with the current speaker name
         all_lines = [l for l in all_lines_init if l[0] == speaker]
         
@@ -311,6 +310,7 @@ def get_dataloader(**params):
         ds_data["item_list"][speaker]["test"] = testset_item_list
         logs += f"Speaker {speaker}, trainset:{len(trainset_item_list)} utt,"+\
                 f"testset:{len(testset_item_list)} utt \n"
+        print(f"Loaded data for {speaker}, train:{len(trainset_item_list)}, test: {len(testset_item_list)}")
 
     # Collator
     collator = Collator(reduction_factor=params["model"]["n_frames_per_step"], 
