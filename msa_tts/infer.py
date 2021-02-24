@@ -334,11 +334,11 @@ class Inference():
                     # Save melspec as npy file
                     mel_npy_path = os.path.join(self.path_manager.inference_path, filename + ".npy")
                     np.save(mel_npy_path, melspec)
-        self.plot_linear_interpolation(plot_inputs)
-        for spk in self.params["speaker"]:
-            model = plot_inputs[spk][0]
-            inputs, target, target_lens = plot_inputs[spk][1], plot_inputs[spk][2], plot_inputs[spk][3]
-            self.plot_loss_landscape(model, inputs, target, target_lens, spk)
+        # self.plot_linear_interpolation(plot_inputs)
+        # for spk in self.params["speaker"]:
+        #     model = plot_inputs[spk][0]
+        #     inputs, target, target_lens = plot_inputs[spk][1], plot_inputs[spk][2], plot_inputs[spk][3]
+        #     self.plot_loss_landscape(model, inputs, target, target_lens, spk)
 
 ##############################
 #           Main

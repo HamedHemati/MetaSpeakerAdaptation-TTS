@@ -286,10 +286,11 @@ def get_dataloader(phase_name,
         # Split item list to train and test lists
         item_list = all_lines[:first_idx]
         train_split_idx = round(float(ds_data["perc_train"]) * len(item_list))
+        if train_split_idx == len(item_list) or train_split_idx == len(item_list)-1:
+            train_split_idx = len(item_list)-2 # To have at least to samples for the test set
+        
         assert train_split_idx < len(item_list)
         
-        if train_split_idx == len(item_list)-1:
-            train_split_idx -= 1 # To have at least to samples for the test set
 
         trainset_item_list = item_list[:train_split_idx]
         ds_data["item_list"][speaker]["train"] = trainset_item_list
