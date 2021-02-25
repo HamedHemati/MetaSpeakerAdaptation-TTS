@@ -25,70 +25,6 @@ from .utils.plot import plot_spec_attn_example
 from torch.nn.utils import clip_grad_norm_
 
 
-class EWC(object):
-    def __init__(self, model, buffer_dataloader, criterion, device):
-
-        self.model = model
-        self.buffer_dataloader = buffer_dataloader
-        self.criterion = criterion
-        self.device = device
-
-        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
-        self._means = {}
-        self._precision_matrices = self._diag_fisher()
-        for n, p in deepcopy(self.params).items():
-            self._means[n] = p.data
-
-    def _unpack_batch(self, batch_items):
-        r"""Un-packs batch items and sends them to compute device"""
-        item_ids, inp_chars, inp_lens, mels, mel_lens, speakers_ids, spk_embs, stop_labels = batch_items
-        # Transfer batch items to compute_device
-        inp_chars, inp_lens  = inp_chars.to(self.device), inp_lens.to(self.device)
-        mels, mel_lens =  mels.to(self.device), mel_lens.to(self.device)
-        
-        speaker_vecs = spk_embs.to(self.device)
-
-        stop_labels = stop_labels.to(self.device)
-        d = {"inputs": inp_chars,
-                "input_lengths": inp_lens,
-                "melspecs": mels,
-                "melspec_lengths": mel_lens,
-                "speaker_vecs":speaker_vecs}
-        return d, stop_labels
-
-    def _diag_fisher(self):
-        precision_matrices = {}
-        for n, p in deepcopy(self.params).items():
-            p.data.zero_()
-            precision_matrices[n] = p.data
-
-        self.model.train()
-        for itr, (batch) in enumerate(self.buffer_dataloader, 1):
-            model_inputs, stop_labels_gt = self._unpack_batch(batch)
-            mels_gt = model_inputs["melspecs"]
-            mel_lens_gt = model_inputs["melspec_lengths"]
-            
-            self.model.zero_grad()
-            out_post, out_inner, out_stop, out_attn = self.model(**model_inputs)
-            y_pred = (out_post, out_inner, out_stop, out_attn)
-            y_gt = (mels_gt, stop_labels_gt)
-            loss = self.criterion(y_pred, y_gt, mel_lens_gt)
-            loss.backward()
-
-            for n, p in self.model.named_parameters():
-                precision_matrices[n].data += p.grad.data ** 2 / len(self.buffer_dataloader)
-
-        precision_matrices = {n: p for n, p in precision_matrices.items()}
-        return precision_matrices
-
-    def penalty(self, model: nn.Module):
-        loss = 0
-        for n, p in model.named_parameters():
-            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
-            loss += _loss.sum()
-        return loss
-
-
 def create_buffer_dl(dataloader, params):
     buffer_dl = deepcopy(dataloader)
     # Collator
@@ -133,7 +69,17 @@ def add_to_buffer_dl(buffer_dl, new_dataloader, num_samples):
     return buffer_dl
 
 
-class EWCTrainer():
+def combine_dataloaders(dl1, dl2):
+    # Update buffer dl
+    dl1.dataset.items = dl1.dataset.items + dl2.dataset.items
+    dl1.dataset.metadata.update(dl2.dataset.metadata)
+    dl1.dataset.speaker_to_id.update(dl2.dataset.speaker_to_id)
+    dl1.dataset.id_to_speaker.update(dl2.dataset.id_to_speaker)
+    
+    return dl1
+
+
+class ExperienceReplayTrainer():
     r"""Base class Trainer. All trainers should inherit from this class."""
     def __init__(self, **params):
         self.params = params
@@ -286,11 +232,11 @@ class EWCTrainer():
         self.cumutest_dict = {}
         
         for spk_itr, speaker in enumerate(self.all_speakers):
-                self.speakers_so_far.append(speaker)
-                # Train task for one epoch
-                self._train(speaker, spk_itr)
-                self._save_checkpoint(speaker, spk_itr)
-                self._test_cumulative(speaker, spk_itr)
+            self.speakers_so_far.append(speaker)
+            # Train task for one epoch
+            self._train(speaker, spk_itr)
+            self._save_checkpoint(speaker, spk_itr)
+            self._test_cumulative(speaker, spk_itr)
 
     def _train(self, speaker, spk_itr):
         self._init_dataloaders(speaker)
@@ -300,11 +246,14 @@ class EWCTrainer():
         if spk_itr == 0:
             self.buffer_dl = create_buffer_dl(self.dataloader_train, self.params)
         else:
-            self.buffer_dl = add_to_buffer_dl(self.buffer_dl, self.dataloader_train, self.params["buffer_sample_size"])
-            # Init/Re-init EWC
-            print("Computing EWC Fischer Matrix")
-            self.ewc = EWC(self.model, self.buffer_dl, self.criterion, self.device)
-
+            trainloader_temp = deepcopy(self.dataloader_train)
+            # Combine data loaders
+            print("Combining train loader and the buffer.")
+            self.dataloader_train = combine_dataloaders(self.dataloader_train, self.buffer_dl)
+            
+            # Update buffer
+            self.buffer_dl = add_to_buffer_dl(self.buffer_dl, trainloader_temp, self.params["buffer_sample_size"])
+        
         speaker_losses = []
         for epoch in range(1, self.params["n_max_epochs"] + 1):
             self.model.train()
@@ -319,14 +268,6 @@ class EWCTrainer():
                 
                 loss = self.criterion(y_pred, y_gt, mel_lens_gt)
                 
-                # Add EWC to the loss term after first iteration
-                if spk_itr > 0:
-                    ewc_penalty = self.ewc.penalty(self.model)
-                    loss += self.params["ewc_importance"] * ewc_penalty
-
-                else:
-                    ewc_penalty = torch.tensor(0.0)
-
                 if self.params["clip_grad_norm"]:
                     grad_norm = clip_grad_norm_(self.model.parameters(), 
                                             self.params["grad_clip_thresh"])
@@ -351,7 +292,7 @@ class EWCTrainer():
                     self.log_writer(log_dict)
                 
                 msg = f'|Speaker {spk_itr}/{len(self.all_speakers)}: Epoch {epoch} - {self.step_global}, itr {itr}/{len(self.dataloader_train)} ' + \
-                      f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4} | ewc: {ewc_penalty.item():#.4}'
+                      f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4}'
                 print(msg)
 
                 self.step_global += 1
@@ -493,8 +434,8 @@ class EWCTrainer():
 
 def main(args):
     params = load_params(os.path.join(args.params_path, "params.yml"))
-    et = EWCTrainer(**params)
-    et.run()
+    er = ExperienceReplayTrainer(**params)
+    er.run()
 
 
 if __name__ == "__main__":

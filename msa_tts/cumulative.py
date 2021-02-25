@@ -230,12 +230,11 @@ class CumulativeTrainer():
 
             if epoch % self.params["test_interval"] == 0:
                 loss_test = self._test(epoch, speaker)
-                if self.params["early_stopping"]:
-                    if len(speaker_losses) > self.params["early_stopping_steps"] and \
-                                            loss_test > max(speaker_losses[-self.params["early_stopping_steps"]:]):
-                        print("Early stopping")
-                        break
                 speaker_losses.append(loss_test)
+                if len(speaker_losses) > self.params["early_stopping_steps"] and \
+                        speaker_losses[-self.params["early_stopping_steps"]-1] < min(speaker_losses[-self.params["early_stopping_steps"]:]):
+                    print("Early stopping")
+                    break
             
         # Plot example after each epoch
         idx = -1
