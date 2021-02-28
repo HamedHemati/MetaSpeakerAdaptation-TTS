@@ -104,7 +104,8 @@ class ExperienceReplayTrainer():
 
         # Save all spakers
         self.all_speakers = self.params["dataset_train"]["speakers_list"]
-
+        random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
+        
         # Set model
         self.params["model"]["num_speakers"] = 1 #len(self.dataloader_train.dataset.speaker_to_id.keys())
         self.params["model"]["n_symbols"] = len(char_list)
@@ -135,7 +136,7 @@ class ExperienceReplayTrainer():
         print(f"\nInitializing train/test loaders for {speaker}")
         log_ds = ""
 
-        self.params["dataset_train"]["speakers_list"] = [speaker]
+        self.params["dataset_train"]["speakers_list"] = speaker
         self.dataloader_train, self.dataloader_test, logs_tr = get_dataloader_default(**self.params)
         log_ds += "Train:\n\n" + logs_tr + "\n\n\n"
 
@@ -231,16 +232,30 @@ class ExperienceReplayTrainer():
         self.speakers_so_far = []
         self.cumutest_dict = {}
         
-        for spk_itr, speaker in enumerate(self.all_speakers):
+        # Initial finetuning
+        num_initial_speakers = self.params["num_initial_speakers"]
+        if num_initial_speakers > 0:
+            initial_speakers = self.all_speakers[:num_initial_speakers]
+            self._init_dataloaders(initial_speakers)
+            
+            speaker = initial_speakers[0]
+            spk_itr = 0
+            self._train(speaker, spk_itr)
+            self._save_checkpoint(speaker, spk_itr)
+
+        for spk_itr, speaker in enumerate(self.all_speakers, num_initial_speakers):
             self.speakers_so_far.append(speaker)
+            # ========== For each task
+            # Init dataloader
+            self._init_dataloaders([speaker])
+            # Initi optimizer
+            self._init_criterion_optimizer()
             # Train task for one epoch
             self._train(speaker, spk_itr)
             self._save_checkpoint(speaker, spk_itr)
             self._test_cumulative(speaker, spk_itr)
 
     def _train(self, speaker, spk_itr):
-        self._init_dataloaders(speaker)
-
         # Init buffer in in the first speaker iteration anf update afterwards
         print("Updating buffer ...")
         if spk_itr == 0:
@@ -271,7 +286,7 @@ class ExperienceReplayTrainer():
                 if self.params["clip_grad_norm"]:
                     grad_norm = clip_grad_norm_(self.model.parameters(), 
                                             self.params["grad_clip_thresh"])
-                self.optim.zero_grad()
+                self.model.zero_grad()
                 loss.backward()
                 self.optim.step()
 
@@ -281,29 +296,30 @@ class ExperienceReplayTrainer():
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
 
-                if self.step_global % self.params["tb_log_interval"] == 0:
-                    # Gardient histograms
-                    # module_grads = self.get_module_grads_flattened(self.step_global)
-                    # self.log_writer(module_grads, type="hist")
+                # if self.step_global % self.params["tb_log_interval"] == 0:
+                #     # Gardient histograms
+                #     # module_grads = self.get_module_grads_flattened(self.step_global)
+                #     # self.log_writer(module_grads, type="hist")
 
-                    log_dict = {f"train/loss": (loss, self.step_global),
-                                f"train/mcd": (mcd_batch_value, self.step_global)
-                                }
-                    self.log_writer(log_dict)
+                #     log_dict = {f"train/loss": (loss, self.step_global),
+                #                 f"train/mcd": (mcd_batch_value, self.step_global)
+                #                 }
+                #     self.log_writer(log_dict)
                 
                 msg = f'|Speaker {spk_itr}/{len(self.all_speakers)}: Epoch {epoch} - {self.step_global}, itr {itr}/{len(self.dataloader_train)} ' + \
                       f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4}'
                 print(msg)
 
                 self.step_global += 1
-
+            
             if epoch % self.params["test_interval"] == 0:
                 loss_test = self._test(epoch, speaker)
                 speaker_losses.append(loss_test)
-                if len(speaker_losses) > self.params["early_stopping_steps"] and \
-                        speaker_losses[-self.params["early_stopping_steps"]-1] < min(speaker_losses[-self.params["early_stopping_steps"]:]):
-                    print("Early stopping")
-                    break
+                if self.params["early_stopping"]:
+                    if len(speaker_losses) > self.params["early_stopping_steps"] and \
+                            speaker_losses[-self.params["early_stopping_steps"]-1] < min(speaker_losses[-self.params["early_stopping_steps"]:]):
+                        print("Early stopping")
+                        break
             
         # Plot example after each epoch
         idx = -1

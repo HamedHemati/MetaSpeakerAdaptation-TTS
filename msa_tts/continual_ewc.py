@@ -189,7 +189,7 @@ class EWCTrainer():
         print(f"\nInitializing train/test loaders for {speaker}")
         log_ds = ""
 
-        self.params["dataset_train"]["speakers_list"] = [speaker]
+        self.params["dataset_train"]["speakers_list"] = speaker
         self.dataloader_train, self.dataloader_test, logs_tr = get_dataloader_default(**self.params)
         log_ds += "Train:\n\n" + logs_tr + "\n\n\n"
 
@@ -285,16 +285,34 @@ class EWCTrainer():
         self.speakers_so_far = []
         self.cumutest_dict = {}
         
-        for spk_itr, speaker in enumerate(self.all_speakers):
-                self.speakers_so_far.append(speaker)
-                # Train task for one epoch
-                self._train(speaker, spk_itr)
-                self._save_checkpoint(speaker, spk_itr)
-                self._test_cumulative(speaker, spk_itr)
+
+        # Initial finetuning
+        num_initial_speakers = self.params["num_initial_speakers"]
+        if num_initial_speakers > 0:
+            initial_speakers = self.all_speakers[:num_initial_speakers]
+            self._init_dataloaders(initial_speakers)
+            
+            speaker = initial_speakers[0]
+            spk_itr = 0
+            self._train(speaker, spk_itr)
+            self._save_checkpoint(speaker, spk_itr)
+
+
+
+        for spk_itr, speaker in enumerate(self.all_speakers, num_initial_speakers):
+            self.speakers_so_far.append(speaker)
+            # ========== For each task
+            # Init dataloader
+            self._init_dataloaders([speaker])
+            # Initi optimizer
+            self._init_criterion_optimizer()
+            # Train task for one epoch
+            self._train(speaker, spk_itr)
+            self._save_checkpoint(speaker, spk_itr)
+            self._test_cumulative(speaker, spk_itr)
+
 
     def _train(self, speaker, spk_itr):
-        self._init_dataloaders(speaker)
-
         # Init buffer in in the first speaker iteration anf update afterwards
         print("Updating buffer ...")
         if spk_itr == 0:

@@ -106,7 +106,7 @@ class Inference():
                                        f"checkpoint_{self.params['checkpoint_id']}.pt")
         state_dict = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
         self.model.load_state_dict(state_dict)
-        print("Loaded model checkpoint.")
+        print(f"Loaded model checkpoint from {checkpoint_path}")
 
         # Criterion
         self.criterion = Tacotron2Loss(n_frames_per_step=self.params["model"]["n_frames_per_step"],
