@@ -158,7 +158,8 @@ class EWCTrainer():
 
         # Save all spakers
         self.all_speakers = self.params["dataset_train"]["speakers_list"]
-
+        random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
+        
         # Set model
         self.params["model"]["num_speakers"] = 1 #len(self.dataloader_train.dataset.speaker_to_id.keys())
         self.params["model"]["n_symbols"] = len(char_list)

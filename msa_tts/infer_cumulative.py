@@ -43,17 +43,21 @@ class InferCumulative():
 
         # Save all spakers
         self.all_speakers = self.params["dataset_train"]["speakers_list"]
-        random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
+        # random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
+        print(self.all_speakers)
         
+        self._load_model()
+
+    def _load_model(self):
         # Set model
         self.params["model"]["num_speakers"] = 1 #len(self.dataloader_train.dataset.speaker_to_id.keys())
         self.params["model"]["n_symbols"] = len(char_list)
-        self.params["model"]["n_mel_channels"] = params["audio_params"]["n_mels"]
+        self.params["model"]["n_mel_channels"] = self.params["audio_params"]["n_mels"]
 
         # Set freezing options
-        self.params["model"]["freeze_charemb"] = params["freeze_charemb"]
-        self.params["model"]["freeze_encoder"] = params["freeze_encoder"]
-        self.params["model"]["freeze_decoder"] = params["freeze_decoder"]
+        self.params["model"]["freeze_charemb"] = self.params["freeze_charemb"]
+        self.params["model"]["freeze_encoder"] = self.params["freeze_encoder"]
+        self.params["model"]["freeze_decoder"] = self.params["freeze_decoder"]
         
         self.model_name = self.params["model_name"]
         self.speaker_emb_type = self.params["model"]["speaker_emb_type"]
@@ -106,7 +110,6 @@ class InferCumulative():
         ckpt = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(ckpt)
            
-
     def _init_wavernn(self):
         self.params_wavernn = load_params(self.params["vocoder_params_path"])
         self.wavernn = get_wavernn(self.device, **self.params_wavernn)
@@ -114,36 +117,29 @@ class InferCumulative():
         self.audio_denoiser = AudioDenoiser(noise_profile_path)
 
     def run(self):
-        self.step_global = 0
         self.speakers_so_far = []
-        self.cumutest_dict = {}
-        
         # Speaker embedding
         with open(self.params["spk_emb_path"], "rb") as pkl_file:
             self.speaker_embeddings = pickle.load(pkl_file)
-
         # Set G2P
         self.g2p = Grapheme2Phoneme()
-
         # Init WaveRNN
         self._init_wavernn()
-
         
         for spk_itr, speaker in enumerate(self.all_speakers):
             self.speakers_so_far.append(speaker)
-            
+            if str(spk_itr) != self.params["checkpoint_id"]:
+                continue
             print(f"Inferring for speaker {speaker}.")
-            
             checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
                                         f"best_{spk_itr+self.params['num_initial_speakers']}_{speaker}.pt")
             self._load_checkpoint(checkpoint_path)
-            
-            self._infer_for_speaker(spk_itr, speaker, speaker)
-            # self._save_checkpoint(speaker, spk_itr)
-            # self._test_cumulative(speaker, spk_itr)
-          
+            for target_speaker in self.speakers_so_far:
+                self._infer_for_speaker(spk_itr, speaker, target_speaker)
+
     def _infer_for_speaker(self, step, ref_speaker, speaker):
         """Generates mel-spec."""
+        print(f"Inferring from {ref_speaker} to {speaker}.")
         self.model.eval()
         # Input char list tensor
         inp_chars, _ = self.g2p.convert(inp=self.params["input_text"], 
@@ -307,6 +303,7 @@ def get_cmd_params():
         cmd_params[key_name] = value
 
     return cmd_params
+
 
 if __name__ == "__main__":
     # Get CMD params
