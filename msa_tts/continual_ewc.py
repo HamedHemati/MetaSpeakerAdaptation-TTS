@@ -331,7 +331,10 @@ class EWCTrainer():
                 model_inputs, stop_labels_gt = self._unpack_batch(batch)
                 mels_gt = model_inputs["melspecs"]
                 mel_lens_gt = model_inputs["melspec_lengths"]
-                
+                # Skip in batch-size == 1 TODO -> find a better solution
+                if mels_gt.shape[0] == 1:
+                    continue
+
                 out_post, out_inner, out_stop, out_attn = self.model(**model_inputs)
                 y_pred = (out_post, out_inner, out_stop, out_attn)
                 y_gt = (mels_gt, stop_labels_gt)
@@ -360,10 +363,6 @@ class EWCTrainer():
                                             mel_lens_gt.cpu().numpy())
 
                 if self.step_global % self.params["tb_log_interval"] == 0:
-                    # Gardient histograms
-                    # module_grads = self.get_module_grads_flattened(self.step_global)
-                    # self.log_writer(module_grads, type="hist")
-
                     log_dict = {f"train/loss": (loss, self.step_global),
                                 f"train/mcd": (mcd_batch_value, self.step_global)
                                 }

@@ -295,16 +295,6 @@ class ExperienceReplayTrainer():
                 mcd_batch_value = mcd_batch(out_post.detach().cpu().transpose(1, 2).numpy(),
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
-
-                # if self.step_global % self.params["tb_log_interval"] == 0:
-                #     # Gardient histograms
-                #     # module_grads = self.get_module_grads_flattened(self.step_global)
-                #     # self.log_writer(module_grads, type="hist")
-
-                #     log_dict = {f"train/loss": (loss, self.step_global),
-                #                 f"train/mcd": (mcd_batch_value, self.step_global)
-                #                 }
-                #     self.log_writer(log_dict)
                 
                 msg = f'|Speaker {spk_itr}/{len(self.all_speakers)}: Epoch {epoch} - {self.step_global}, itr {itr}/{len(self.dataloader_train)} ' + \
                       f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4}'

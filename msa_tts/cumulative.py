@@ -234,9 +234,6 @@ class CumulativeTrainer():
                                             mel_lens_gt.cpu().numpy())
 
                 if self.step_global % self.params["tb_log_interval"] == 0:
-                    # Gardient histograms
-                    # module_grads = self.get_module_grads_flattened(self.step_global)
-                    # self.log_writer(module_grads, type="hist")
 
                     log_dict = {f"train/loss": (loss, self.step_global),
                                 f"train/mcd": (mcd_batch_value, self.step_global)

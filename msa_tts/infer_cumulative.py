@@ -11,6 +11,8 @@ import soundfile
 import random
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 from .utils.generic import load_params
 from datetime import datetime
 from .utils.path_manager import PathManager
@@ -25,6 +27,14 @@ from .utils.plot import plot_attention, plot_spectrogram
 from .utils.g2p.grapheme2phoneme import Grapheme2Phoneme
 from .utils.helpers import get_wavernn
 from .utils.wavernn.audio_denoiser import AudioDenoiser
+
+### ========== Fopr multi-threaded GPU inference
+from multiprocessing import set_start_method
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    pass
+### ========== 
 
 
 class InferCumulative():
@@ -43,11 +53,10 @@ class InferCumulative():
 
         # Save all spakers
         self.all_speakers = self.params["dataset_train"]["speakers_list"]
-        # random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
+        if not "joint_training" in self.params.keys():
+            random.Random(self.params["speaker_seed"]).shuffle(self.all_speakers)
         print(self.all_speakers)
         
-        self._load_model()
-
     def _load_model(self):
         # Set model
         self.params["model"]["num_speakers"] = 1 #len(self.dataloader_train.dataset.speaker_to_id.keys())
@@ -62,10 +71,10 @@ class InferCumulative():
         self.model_name = self.params["model_name"]
         self.speaker_emb_type = self.params["model"]["speaker_emb_type"]
         if self.model_name  == "Tacotron2NV":
-            self.model = Tacotron2NV(self.params["model"])
+            model = Tacotron2NV(self.params["model"])
         else:
             raise NotImplementedError
-        self.model.to(self.device)
+        return model.to(self.device)
 
     def _init_dataloaders(self, speaker):
         # Load meta-train loaders
@@ -104,82 +113,173 @@ class InferCumulative():
         else:
             raise NotImplementedError
 
-    def _load_checkpoint(self, checkpoint_path):
+    def _load_checkpoint(self, checkpoint_path, model):
          # Load checkpoint
         print(f"Loading checkpoint from  {checkpoint_path}")  
         ckpt = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(ckpt)
-           
-    def _init_wavernn(self):
-        self.params_wavernn = load_params(self.params["vocoder_params_path"])
-        self.wavernn = get_wavernn(self.device, **self.params_wavernn)
+        model.load_state_dict(ckpt)
+        return model 
+
+    def _load_wavernn(self):
+        params_wavernn = load_params(self.params["vocoder_params_path"])
+        wavernn = get_wavernn(self.device, **params_wavernn)
         noise_profile_path="experiments/files/noise_profiles/noise_prof1.wav"
-        self.audio_denoiser = AudioDenoiser(noise_profile_path)
+        audio_denoiser = AudioDenoiser(noise_profile_path)
+        return wavernn, params_wavernn, audio_denoiser
 
     def run(self):
         self.speakers_so_far = []
+        
         # Speaker embedding
         with open(self.params["spk_emb_path"], "rb") as pkl_file:
             self.speaker_embeddings = pickle.load(pkl_file)
+        
         # Set G2P
         self.g2p = Grapheme2Phoneme()
-        # Init WaveRNN
-        self._init_wavernn()
         
+        # Read input text list
+        with open(self.params["input_text_file"], "r") as file:
+            self.sent_list = file.readlines()
+        self.sent_list = [s.strip() for s in self.sent_list]
+        
+        # Parallel ?????
+        max_workers = int(self.params["max_workers"])
+        parallel = True
+        if max_workers == 1:
+            parallel = False
+
+        # Init WaveRNN
+        if not parallel:
+            self.model = self._load_model()
+            self.wavernn, self.params_wavernn, self.audio_denoiser = self._load_wavernn()
+        else:
+            executor = ProcessPoolExecutor(max_workers=max_workers)
+            results = []
+
         for spk_itr, speaker in enumerate(self.all_speakers):
-            self.speakers_so_far.append(speaker)
-            if str(spk_itr) != self.params["checkpoint_id"]:
-                continue
-            print(f"Inferring for speaker {speaker}.")
-            checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
-                                        f"best_{spk_itr+self.params['num_initial_speakers']}_{speaker}.pt")
-            self._load_checkpoint(checkpoint_path)
-            for target_speaker in self.speakers_so_far:
-                self._infer_for_speaker(spk_itr, speaker, target_speaker)
+            if not "joint_training" in self.params.keys():
+                self.speakers_so_far.append(speaker)
+                if str(spk_itr) != self.params["checkpoint_id"]:
+                    continue
+
+                # Load checkpoint
+                checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
+                                                f"checkpoint_{spk_itr+self.params['num_initial_speakers']}_{speaker}.pt")
+            else:
+                checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
+                                                f"checkpoint_{self.params['checkpoint_id']}.pt")
+                self.speakers_so_far = self.all_speakers
+
+            if not parallel:
+                self.model = self._load_checkpoint(checkpoint_path, self.model)
+                
+            # Generate speech for target speakers
+            for itr_tgt_spk, target_speaker in enumerate(self.speakers_so_far):
+                if not parallel:
+                    print(f"\n\nInferring for speaker {target_speaker}: {itr_tgt_spk}/{len(self.speakers_so_far)}")
+                    self._infer_for_speaker(spk_itr, speaker, target_speaker)
+                else:
+                    # self._infer_for_speaker_parallel(spk_itr, speaker, target_speaker, checkpoint_path, itr_tgt_spk, len(self.speakers_so_far))
+                    out = executor.submit(self._infer_for_speaker_parallel, spk_itr, speaker, target_speaker, checkpoint_path, itr_tgt_spk, len(self.speakers_so_far))
+                    results.append(out)
+            if "joint_training" in self.params.keys():
+                break
+
+        if parallel:
+            results = [o.result() for o in results]
 
     def _infer_for_speaker(self, step, ref_speaker, speaker):
         """Generates mel-spec."""
         print(f"Inferring from {ref_speaker} to {speaker}.")
         self.model.eval()
         # Input char list tensor
-        inp_chars, _ = self.g2p.convert(inp=self.params["input_text"], 
-                                        language=self.params["language"], 
-                                        convert_mode=self.params["convert_mode"])
-        inp_chars = torch.tensor(inp_chars).long().to(self.device)
-        inp_len = torch.tensor([len(inp_chars)]).to(self.device)
+        for itr_sent, sent in enumerate(self.sent_list):
+            inp_chars, _ = self.g2p.convert(inp=sent, 
+                                            language=self.params["language"], 
+                                            convert_mode=self.params["convert_mode"])
+            inp_chars = torch.tensor(inp_chars).long().to(self.device)
+            inp_len = torch.tensor([len(inp_chars)]).to(self.device)
 
-        # Speaker embedding
-        spk_vec = torch.tensor(self.speaker_embeddings[speaker]["mean"]).unsqueeze(0).to(self.device)
-        
-        # Feed inputs to the models
-        postnet_outputs, mel_lengths, attn_weights = self.model.infer(inp_chars.unsqueeze(0), 
-                                                                 inp_len, 
-                                                                 spk_vec)
+            # Speaker embedding
+            spk_vec = torch.tensor(self.speaker_embeddings[speaker]["mean"]).unsqueeze(0).to(self.device)
+            
+            # Feed inputs to the models
+            postnet_outputs, mel_lengths, attn_weights = self.model.infer(inp_chars.unsqueeze(0), 
+                                                                    inp_len, 
+                                                                    spk_vec)
 
-        postnet_outputs = postnet_outputs.squeeze(0).detach().cpu().numpy().T
-        attn_weights = attn_weights.squeeze(0).detach().cpu().numpy()
-        
-        print(f"postnet_outputs: {postnet_outputs.shape}")
-        print(f"attn_weights: {attn_weights.shape}")
+            postnet_outputs = postnet_outputs.squeeze(0).detach().cpu().numpy().T
+            attn_weights = attn_weights.squeeze(0).detach().cpu().numpy()
+            
+            print(f"postnet_outputs: {postnet_outputs.shape}")
+            print(f"attn_weights: {attn_weights.shape}")
 
-        melspec = postnet_outputs.T        
+            melspec = postnet_outputs.T        
 
+            # Save mel-spec and wav
+            file_name = f"{step}_{ref_speaker}_{speaker}_{itr_sent}"
 
-        # Save mel-spec and wav
-        file_name = f"{step}_{ref_speaker}_{speaker}"
-
-        melspec_path = os.path.join(self.path_manager.inference_path, file_name + "_mel")
-        plot_spectrogram(melspec, melspec_path)
-        
-        # Generate wav
-        wav_path = os.path.join(self.path_manager.inference_path, file_name + ".wav")
-        wav = self.wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
-                                    self.params_wavernn["target"], 
-                                    self.params_wavernn["overlap"])
-        wav = self.audio_denoiser.denoise(wav)
-        soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])
+            melspec_path = os.path.join(self.path_manager.inference_path, file_name + "_mel")
+            plot_spectrogram(melspec, melspec_path)
+            
+            # Generate wav
+            wav_path = os.path.join(self.path_manager.inference_path, file_name + ".wav")
+            wav = self.wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
+                                        self.params_wavernn["target"], 
+                                        self.params_wavernn["overlap"])
+            wav = self.audio_denoiser.denoise(wav)
+            soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])
 
         self.model.train()
+
+    def _infer_for_speaker_parallel(self, step, ref_speaker, speaker, checkpoint_path, itr_tgt_spk, total):
+        """Generates mel-spec."""
+        print(f"\n\nInferring for speaker {speaker}: {itr_tgt_spk}/{total}")
+        model = self._load_model()
+        # Load checkpoint
+        model = self._load_checkpoint(checkpoint_path, model)
+        # WaveRNN
+        wavernn, params_wavernn, audio_denoiser = self._load_wavernn()
+        
+        model.eval()
+        # Input char list tensor
+        for itr_sent, sent in enumerate(self.sent_list):
+            inp_chars, _ = self.g2p.convert(inp=sent, 
+                                            language=self.params["language"], 
+                                            convert_mode=self.params["convert_mode"])
+            inp_chars = torch.tensor(inp_chars).long().to(self.device)
+            inp_len = torch.tensor([len(inp_chars)]).to(self.device)
+
+            # Speaker embedding
+            spk_vec = torch.tensor(self.speaker_embeddings[speaker]["mean"]).unsqueeze(0).to(self.device)
+            
+            # Feed inputs to the models
+            postnet_outputs, mel_lengths, attn_weights = model.infer(inp_chars.unsqueeze(0), 
+                                                                    inp_len, 
+                                                                    spk_vec)
+
+            postnet_outputs = postnet_outputs.squeeze(0).detach().cpu().numpy().T
+            attn_weights = attn_weights.squeeze(0).detach().cpu().numpy()
+            
+            print(f"postnet_outputs: {postnet_outputs.shape}")
+            print(f"attn_weights: {attn_weights.shape}")
+
+            melspec = postnet_outputs.T        
+
+            # Save mel-spec and wav
+            file_name = f"{step}_{ref_speaker}_{speaker}_{itr_sent}"
+
+            melspec_path = os.path.join(self.path_manager.inference_path, file_name + "_mel")
+            plot_spectrogram(melspec, melspec_path)
+            
+            # Generate wav
+            wav_path = os.path.join(self.path_manager.inference_path, file_name + ".wav")
+            wav = wavernn.generate(torch.tensor(melspec).unsqueeze(0), True, 
+                                        params_wavernn["target"], 
+                                        params_wavernn["overlap"])
+            wav = audio_denoiser.denoise(wav)
+            soundfile.write(wav_path, wav, self.params["audio_params"]["sample_rate"])
+        return True
 
     def _test_cumulative(self, speaker, spk_itr):
         # Load dataloaders
