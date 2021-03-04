@@ -276,7 +276,8 @@ class ExperienceReplayTrainer():
                 model_inputs, stop_labels_gt = self._unpack_batch(batch)
                 mels_gt = model_inputs["melspecs"]
                 mel_lens_gt = model_inputs["melspec_lengths"]
-                
+                if mels_gt.shape[0] == 1:
+                    continue
                 out_post, out_inner, out_stop, out_attn = self.model(**model_inputs)
                 y_pred = (out_post, out_inner, out_stop, out_attn)
                 y_gt = (mels_gt, stop_labels_gt)

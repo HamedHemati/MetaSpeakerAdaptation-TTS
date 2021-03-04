@@ -45,8 +45,9 @@ def train_spk_cls(params):
 
     # ========== Target speakers
     target_speakers = params["dataset_train"]["speakers_list"]
-
+    
     spk_to_id = {spk:itr for (itr, spk) in enumerate(target_speakers)}
+    print(spk_to_id.keys())
     # ========== Dict for target speakers
     ds_spk_embs = {}
     for key in spk_embs:
@@ -84,7 +85,8 @@ def train_spk_cls(params):
     emb_size = 256
     hidden_size = 128
     num_cls = len(spk_to_id.keys())
-
+    print(spk_to_id.keys())
+    print("num cls:", num_cls)
     model = SpkCLSModel(emb_size, hidden_size, num_cls)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)

@@ -5,13 +5,17 @@ import yaml
 import torch
 import higher
 import copy
+from copy import deepcopy
 import pickle
 import random
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from .utils.generic import load_params
 from datetime import datetime
 from .utils.path_manager import PathManager
-from .dataloaders.dataloader_default import get_dataloader as  get_dataloader_default
+from .dataloaders.dataloader_default_buffer import get_dataloader as  get_dataloader_default
+from .dataloaders.dataloader_default_buffer import Collator
 from .models.tacotron2nv import Tacotron2NV
 from .models.modules_tacotron2nv.tacotron2nv_loss import Tacotron2Loss
 from .utils.helpers import get_optimizer
@@ -21,7 +25,109 @@ from .utils.plot import plot_spec_attn_example
 from torch.nn.utils import clip_grad_norm_
 
 
-class CumulativeTrainer():
+
+def _unpack_batch(batch_items, device, add_item_id=False):
+        r"""Un-packs batch items and sends them to compute device"""
+        item_ids, inp_chars, inp_lens, mels, mel_lens, speakers_ids, spk_embs, stop_labels = batch_items
+        # Transfer batch items to compute_device
+        inp_chars, inp_lens  = inp_chars.to(device), inp_lens.to(device)
+        mels, mel_lens =  mels.to(device), mel_lens.to(device)
+        
+        speaker_vecs = spk_embs.to(device)
+
+        stop_labels = stop_labels.to(device)
+        d = {"inputs": inp_chars,
+                "input_lengths": inp_lens,
+                "melspecs": mels,
+                "melspec_lengths": mel_lens,
+                "speaker_vecs":speaker_vecs}
+        if add_item_id:
+            d["item_ids"] = item_ids
+        
+        return d, stop_labels
+
+
+def create_buffer_dl(dataloader, params, model, device):
+    buffer_dl = deepcopy(dataloader)
+    # Collator
+    collator = Collator(reduction_factor=params["model"]["n_frames_per_step"], 
+                        audio_processor=params["audio_processor"],
+                        audio_params=params["audio_params"])
+
+    buffer_dl = DataLoader(buffer_dl.dataset,
+                           collate_fn=collator,
+                           batch_size=params["buffer_batch_size"],
+                           sampler=None,
+                           num_workers=params["num_workers"],
+                           drop_last=False,
+                           pin_memory=True,
+                           shuffle=params["buffer_shuffle"])
+
+    # Shuffle the buffer dataloader item list
+    random.shuffle(buffer_dl.dataset.items)
+    # Select the top num_samples items
+    buffer_dl.dataset.items = buffer_dl.dataset.items[:params["buffer_sample_size"]]
+    # Update metadata dict
+    buffer_dl.dataset.metadata = {item: buffer_dl.dataset.metadata[item] for item in buffer_dl.dataset.items}
+    # Add mel-spec key with soft values to the new buffer item
+    with torch.no_grad():
+        for itr, (batch) in enumerate(buffer_dl, 1):
+            model_inputs, stop_labels_gt = _unpack_batch(batch, device, add_item_id=True)
+            item_ids = model_inputs["item_ids"]
+            print(item_ids)
+            del model_inputs["item_ids"]
+            out_post, out_inner, out_stop, out_attn = model(**model_inputs)
+            for item_itr, item_id in enumerate(item_ids):
+                soft_melspec = out_post[item_itr].detach().cpu()
+                soft_melspec = soft_melspec[:, :model_inputs["melspec_lengths"][item_itr].item()]
+                buffer_dl.dataset.metadata[item_id]["melspec"] = soft_melspec
+    
+    return buffer_dl
+
+
+def add_to_buffer_dl(buffer_dl, new_dataloader, num_samples, model, device):
+    new_dl = deepcopy(new_dataloader)
+    # Shuffle new_dl item list
+    random.shuffle(new_dl.dataset.items)
+    
+    # Select the top num_samples items
+    new_dl.dataset.items = new_dl.dataset.items[:num_samples]
+    # New metadata dict
+    new_metadata = {item: new_dl.dataset.metadata[item] for item in new_dl.dataset.items}
+    new_dl.dataset.metadata = new_metadata
+    
+    # Update buffer dl
+    buffer_dl.dataset.items = buffer_dl.dataset.items + new_dl.dataset.items
+    buffer_dl.dataset.metadata.update(new_dl.dataset.metadata )
+    buffer_dl.dataset.speaker_to_id.update(new_dl.dataset.speaker_to_id)
+    buffer_dl.dataset.id_to_speaker.update(new_dl.dataset.id_to_speaker)
+    
+    with torch.no_grad():
+        for itr, (batch) in enumerate(new_dl, 1):
+            model_inputs, stop_labels_gt = _unpack_batch(batch, device, add_item_id=True)
+            item_ids = model_inputs["item_ids"]
+            del model_inputs["item_ids"]
+            
+            out_post, out_inner, out_stop, out_attn = model(**model_inputs)
+            for item_itr, item_id in enumerate(item_ids):
+                soft_melspec = out_post[item_itr].detach().cpu()
+                soft_melspec = soft_melspec[:, :model_inputs["melspec_lengths"][item_itr].item()]
+                buffer_dl.dataset.metadata[item_id]["melspec"] = soft_melspec
+    
+    return buffer_dl
+
+
+def combine_dataloaders(dl1, dl2):
+    # Update buffer dl
+    dl1.dataset.items = dl1.dataset.items + dl2.dataset.items
+    dl1.dataset.metadata.update(dl2.dataset.metadata)
+    dl1.dataset.speaker_to_id.update(dl2.dataset.speaker_to_id)
+    dl1.dataset.id_to_speaker.update(dl2.dataset.id_to_speaker)
+    
+    return dl1
+
+
+class ExperienceReplayKnowledgeDistillTrainer():
     r"""Base class Trainer. All trainers should inherit from this class."""
     def __init__(self, **params):
         self.params = params
@@ -85,7 +191,6 @@ class CumulativeTrainer():
         # Write DS details to a text file
         with open(os.path.join(self.path_manager.output_path, "dataset_details.txt"), 'w') as ds_details:
             ds_details.write(log_ds)
-        
 
     def _init_criterion_optimizer(self):
         # Criterion
@@ -100,14 +205,14 @@ class CumulativeTrainer():
         # Init optimizer
         self.optim = get_optimizer(self.model, **self.params["optim"])
 
-    def _unpack_batch(self, batch_items):
+    def _unpack_batch(self, batch_items, add_item_id=False):
         r"""Un-packs batch items and sends them to compute device"""
         item_ids, inp_chars, inp_lens, mels, mel_lens, speakers_ids, spk_embs, stop_labels = batch_items
         if self.model_name == "Tacotron2NV":
             # Transfer batch items to compute_device
             inp_chars, inp_lens  = inp_chars.to(self.device), inp_lens.to(self.device)
             mels, mel_lens =  mels.to(self.device), mel_lens.to(self.device)
-            
+
             if self.speaker_emb_type  == "learnable_lookup":
                 speaker_vecs = speakers_ids.to(self.device)
             elif self.speaker_emb_type in ["static", "static+linear"]:
@@ -118,7 +223,11 @@ class CumulativeTrainer():
                  "input_lengths": inp_lens,
                  "melspecs": mels,
                  "melspec_lengths": mel_lens,
-                 "speaker_vecs":speaker_vecs}
+                 "speaker_vecs":speaker_vecs,
+                 }
+            if add_item_id:
+                d["item_ids"]: item_ids
+
             return d, stop_labels
             # return [inp_chars, inp_lens, mels, mel_lens, speaker_vecs], stop_labels
         else:
@@ -174,7 +283,6 @@ class CumulativeTrainer():
         self.speakers_so_far = []
         self.cumutest_dict = {}
         
-
         # Initial finetuning
         num_initial_speakers = self.params["num_initial_speakers"]
         if num_initial_speakers > 0:
@@ -186,8 +294,6 @@ class CumulativeTrainer():
             self._train(speaker, spk_itr)
             self._save_checkpoint(speaker, spk_itr)
 
-
-
         for spk_itr, speaker in enumerate(self.all_speakers, num_initial_speakers):
             self.speakers_so_far.append(speaker)
             # ========== For each task
@@ -197,11 +303,16 @@ class CumulativeTrainer():
             self._init_criterion_optimizer()
             # Train task for one epoch
             self._train(speaker, spk_itr)
-            self._save_checkpoint(speaker, spk_itr)
+            self._save_checkpoint(speaker, spk_itr)  
             self._test_cumulative(speaker, spk_itr)
 
-
     def _train(self, speaker, spk_itr):
+        # Init buffer in in the first speaker iteration anf update afterwards
+        if spk_itr > 0:
+            # Combine data loaders
+            print("\n\nCombining train loader and the buffer ...")
+            self.dataloader_train = combine_dataloaders(self.dataloader_train, self.buffer_dl)
+
         speaker_losses = []
         for epoch in range(1, self.params["n_max_epochs"] + 1):
             self.model.train()
@@ -209,11 +320,8 @@ class CumulativeTrainer():
                 model_inputs, stop_labels_gt = self._unpack_batch(batch)
                 mels_gt = model_inputs["melspecs"]
                 mel_lens_gt = model_inputs["melspec_lengths"]
-                
-                # Skip batches of size 1
-                if model_inputs["inputs"].shape[0] == 1:
+                if mels_gt.shape[0] == 1:
                     continue
-                    
                 out_post, out_inner, out_stop, out_attn = self.model(**model_inputs)
                 y_pred = (out_post, out_inner, out_stop, out_attn)
                 y_gt = (mels_gt, stop_labels_gt)
@@ -223,7 +331,7 @@ class CumulativeTrainer():
                 if self.params["clip_grad_norm"]:
                     grad_norm = clip_grad_norm_(self.model.parameters(), 
                                             self.params["grad_clip_thresh"])
-                self.optim.zero_grad()
+                self.model.zero_grad()
                 loss.backward()
                 self.optim.step()
 
@@ -232,16 +340,9 @@ class CumulativeTrainer():
                 mcd_batch_value = mcd_batch(out_post.detach().cpu().transpose(1, 2).numpy(),
                                             mels_gt.cpu().transpose(1, 2).numpy(),
                                             mel_lens_gt.cpu().numpy())
-
-                if self.step_global % self.params["tb_log_interval"] == 0:
-
-                    log_dict = {f"train/loss": (loss, self.step_global),
-                                f"train/mcd": (mcd_batch_value, self.step_global)
-                                }
-                    self.log_writer(log_dict)
                 
                 msg = f'|Speaker {spk_itr}/{len(self.all_speakers)}: Epoch {epoch} - {self.step_global}, itr {itr}/{len(self.dataloader_train)} ' + \
-                      f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4} '
+                      f'::  step loss: {loss.item():#.4} | mcd: {mcd_batch_value:#.4}'
                 print(msg)
 
                 self.step_global += 1
@@ -249,11 +350,12 @@ class CumulativeTrainer():
             if epoch % self.params["test_interval"] == 0:
                 loss_test = self._test(epoch, speaker)
                 speaker_losses.append(loss_test)
-                if len(speaker_losses) > self.params["early_stopping_steps"] and \
-                        speaker_losses[-self.params["early_stopping_steps"]-1] < min(speaker_losses[-self.params["early_stopping_steps"]:]):
-                    print("Early stopping")
-                    break
-            
+                if self.params["early_stopping"]:
+                    if len(speaker_losses) > self.params["early_stopping_steps"] and \
+                            speaker_losses[-self.params["early_stopping_steps"]-1] < min(speaker_losses[-self.params["early_stopping_steps"]:]):
+                        print("Early stopping")
+                        break
+
         # Plot example after each epoch
         idx = -1
         step_temp = self.step_global // 1000
@@ -269,6 +371,16 @@ class CumulativeTrainer():
                             length_mel=mel_lens_gt[idx].item(),
                             length_attn=model_inputs["input_lengths"][idx].item())
 
+        # Init buffer or update buffer
+        print("Updating buffer ...")
+        if spk_itr == 0:
+            self.buffer_dl = create_buffer_dl(self.dataloader_train, self.params, self.model, self.device)
+        else:
+            trainloader_temp = deepcopy(self.dataloader_train)
+            # Update buffer
+            self.buffer_dl = add_to_buffer_dl(self.buffer_dl, trainloader_temp, self.params["buffer_sample_size"], self.model, self.device)
+        
+        
     def _test(self, epoch, speaker):
         print(f"===== Testing epoch {epoch}")
         self.model.train()
@@ -383,8 +495,8 @@ class CumulativeTrainer():
 
 def main(args):
     params = load_params(os.path.join(args.params_path, "params.yml"))
-    ct = CumulativeTrainer(**params)
-    ct.run()
+    erkd = ExperienceReplayKnowledgeDistillTrainer(**params)
+    erkd.run()
 
 
 if __name__ == "__main__":
@@ -392,3 +504,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--params_path", type=str)
     args = parser.parse_args()
+    main(args)

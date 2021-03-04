@@ -159,12 +159,14 @@ class InferCumulative():
         for spk_itr, speaker in enumerate(self.all_speakers):
             if not "joint_training" in self.params.keys():
                 self.speakers_so_far.append(speaker)
-                if str(spk_itr) != self.params["checkpoint_id"]:
-                    continue
-
+                if self.params["checkpoint_id"] != "all":
+                    if str(spk_itr) != self.params["checkpoint_id"]:
+                        print("Skipping speaker ", spk_itr)
+                        continue
+                
                 # Load checkpoint
                 checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
-                                                f"checkpoint_{spk_itr+self.params['num_initial_speakers']}_{speaker}.pt")
+                                                f"best_{spk_itr+self.params['num_initial_speakers']}_{speaker}.pt")
             else:
                 checkpoint_path = os.path.join(self.path_manager.checkpoints_path, 
                                                 f"checkpoint_{self.params['checkpoint_id']}.pt")

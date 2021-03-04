@@ -176,6 +176,7 @@ class JointTrainer():
 
     def run(self):
         self.step_global = 0
+        self.best_test_loss = 100000000.0
         for epoch in range(1, self.params["n_epochs"] + 1):
             # Train task for one epoch
             self._train(epoch)
@@ -278,6 +279,12 @@ class JointTrainer():
                 mcd_batch_value_total += mcd_batch_value
         
         loss_total = loss_total / float(len(self.dataloader_test))
+
+        if loss_total < self.best_test_loss:
+            self.best_test_loss = loss_total
+            best_checkpoint_path = os.path.join(self.path_manager.checkpoints_path, f"checkpoint_best.pt")
+            torch.save(self.model.state_dict(), best_checkpoint_path)
+        
         mcd_batch_value_total = mcd_batch_value_total / float(len(self.dataloader_test))
 
         log_dict = {f"test/loss": (loss_total, self.step_global),
