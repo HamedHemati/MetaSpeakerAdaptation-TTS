@@ -174,8 +174,7 @@ class ExperienceReplayTrainer():
         with open(os.path.join(self.path_manager.output_path, "dataset_details.txt"), 'w') as ds_details:
             ds_details.write(log_ds)
         
-
-    def _init_criterion_optimizer(self, new_lr=None):
+    def _init_criterion_optimizer(self, spk_similarity=1.0, new_lr=None):
         # Criterion
         if self.params["criterion"]["criterion_type"] == "Tacotron2Loss":
             self.criterion = Tacotron2Loss(n_frames_per_step=self.params["model"]["n_frames_per_step"],
@@ -188,7 +187,13 @@ class ExperienceReplayTrainer():
         # Init optimizer
         optim_params = deepcopy(self.params["optim"])
         if new_lr is not None:
+            print("Changing LR")
             optim_params["lr"] = new_lr
+        if self.params["regularizaton_method"] == "adaptive_weightdecay":
+            if spk_similarity != 1.0:
+                print("Changing weight decay")
+                optim_params["weight_decay"] = self.params["weightdecay_value"] * (1.0 - spk_similarity)
+        
         self.optim = get_optimizer(self.model, **optim_params)
 
     def _unpack_batch(self, batch_items):
@@ -292,7 +297,7 @@ class ExperienceReplayTrainer():
             self._init_dataloaders([speaker])
             # Initi optimizer
             new_lr = None
-            self._init_criterion_optimizer(new_lr=new_lr)
+            self._init_criterion_optimizer(spk_similarity=spk_similarity, new_lr=new_lr)
             # Train task for one epoch
              
             self._train(speaker, spk_itr, spk_similarity)
@@ -327,10 +332,11 @@ class ExperienceReplayTrainer():
                 y_gt = (mels_gt, stop_labels_gt)
                 
                 loss = self.criterion(y_pred, y_gt, mel_lens_gt)
-                if spk_itr > 0:
-                    if self.params["clip_grad_norm"]:
-                        grad_norm = clip_grad_norm_(self.model.parameters(), 
-                                                    spk_similarity * self.params["grad_clip_thresh"])
+                if self.params["regularizaton_method"] == "adaptive_weightclipping":
+                    if spk_itr > 0:
+                        if self.params["clip_grad_norm"]:
+                            grad_norm = clip_grad_norm_(self.model.parameters(), 
+                                                        spk_similarity * self.params["grad_clip_thresh"])
 
                 self.model.zero_grad()
                 loss.backward()
