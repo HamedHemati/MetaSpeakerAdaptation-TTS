@@ -42,25 +42,46 @@ def create_buffer_dl(dataloader, params):
                                   drop_last=False,
                                   pin_memory=True,
                                   shuffle=params["buffer_shuffle"])
-
+    
     # Shuffle the buffer dataloader item list
     random.shuffle(buffer_dl.dataset.items)
-    # Select the top num_samples items
-    buffer_dl.dataset.items = buffer_dl.dataset.items[:params["buffer_sample_size"]]
-    # Update metadata dict
-    buffer_dl.dataset.metadata = {item: buffer_dl.dataset.metadata[item] for item in buffer_dl.dataset.items}
+    if params["regularizaton_method"] == "buffer_replicate":
+        # Select the top num_samples items
+        buffer_dl.dataset.items = buffer_dl.dataset.items[:params["buffer_sample_size"]] * params["buffer_replicate_factor"]
+        print(buffer_dl.dataset.items)
+        # Update metadata dict
+        buffer_dl.dataset.metadata = {item + f"-{itr}": buffer_dl.dataset.metadata[item] for (itr, item) in enumerate(buffer_dl.dataset.items)}
+        buffer_dl.dataset.items = list(buffer_dl.dataset.metadata.keys())
+        print(buffer_dl.dataset.metadata.keys())
+        
+    else:
+        # Select the top num_samples items
+        buffer_dl.dataset.items = buffer_dl.dataset.items[:params["buffer_sample_size"]]
+        # Update metadata dict
+        buffer_dl.dataset.metadata = {item: buffer_dl.dataset.metadata[item] for item in buffer_dl.dataset.items}
     
     return buffer_dl
 
 
-def add_to_buffer_dl(buffer_dl, new_dataloader, num_samples):
+def add_to_buffer_dl(buffer_dl, new_dataloader, num_samples, params):
     new_dl = deepcopy(new_dataloader)
     # Shuffle new_dl item list
     random.shuffle(new_dl.dataset.items)
-    # Select the top num_samples items
-    new_items = new_dl.dataset.items[:num_samples]
-    # New metadata dict
-    new_metadata = {item: new_dl.dataset.metadata[item] for item in new_items}
+
+    if params["regularizaton_method"] == "buffer_replicate":
+        # Select the top num_samples items
+        new_items = new_dl.dataset.items[:num_samples] * params["buffer_replicate_factor"]
+        print(new_items)
+
+        # New metadata dict
+        new_metadata = {item + f"-{itr}": new_dl.dataset.metadata[item] for (itr, item) in enumerate(new_items)}
+        new_items = list(new_metadata.keys())
+        print(new_metadata.keys())
+    else:
+        # Select the top num_samples items
+        new_items = new_dl.dataset.items[:num_samples]
+        # New metadata dict
+        new_metadata = {item: new_dl.dataset.metadata[item] for item in new_items}
     
     # Update buffer dl
     buffer_dl.dataset.items = buffer_dl.dataset.items + new_items
@@ -316,7 +337,7 @@ class ExperienceReplayTrainer():
             self.dataloader_train = combine_dataloaders(self.dataloader_train, self.buffer_dl)
             
             # Update buffer
-            self.buffer_dl = add_to_buffer_dl(self.buffer_dl, trainloader_temp, self.params["buffer_sample_size"])
+            self.buffer_dl = add_to_buffer_dl(self.buffer_dl, trainloader_temp, self.params["buffer_sample_size"], self.params)
         
         speaker_losses = []
         for epoch in range(1, self.params["n_max_epochs"] + 1):
